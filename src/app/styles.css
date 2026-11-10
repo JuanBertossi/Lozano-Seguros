@@ -1,0 +1,4 @@
+@layer theme, legacy, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "../features/dashboard/dashboard.css" layer(legacy);
+@import "tailwindcss/utilities.css" layer(utilities);
