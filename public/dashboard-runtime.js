@@ -669,7 +669,7 @@ function openRifa(id,sid){
  const r=id?S.rifas.find(x=>x.id===id):{sid:sid||'',anio:F.rifaA,nro:'',modo:'contado',importe:S.conf.rifaImporte,desde:hoy()};if(!r)return;
  const socios=socOrd().map(s=>({id:s.id,nombre:s.nombre,nro:String(s.nro||'')})),socioFijo=V==='socio'&&!!r.sid&&!!soc(r.sid);
  if(r.sid&&soc(r.sid)&&!socios.some(s=>s.id===r.sid)){const s=soc(r.sid);socios.push({id:s.id,nombre:s.nombre,nro:String(s.nro||'')})}
- close_();window.dispatchEvent(new CustomEvent('agencia:editar-rifa',{detail:{id:id||null,socioFijo,socios,ncuotas:S.conf.rifaCuotas,inicial:{sid:r.sid||'',numero:String(r.nro||''),anio:String(r.anio),importe:fmtN(r.importe),modo:r.modo},guardar:datos=>saveRifa(id,datos),eliminar:()=>{if(id)del('rifas',id)},crearSocio:crearSocioParaSeguro,puenteSocio:socioPuente(true),cerrar:close_}}));
+ close_();window.dispatchEvent(new CustomEvent('agencia:editar-rifa',{detail:{id:id||null,socioFijo,socios,puenteRifa:rifaPuente(),ncuotas:S.conf.rifaCuotas,inicial:{sid:r.sid||'',numero:String(r.nro||''),anio:String(r.anio),importe:fmtN(r.importe),modo:r.modo},guardar:datos=>saveRifa(id,datos),eliminar:()=>{if(id)del('rifas',id)},crearSocio:crearSocioParaSeguro,puenteSocio:socioPuente(true),cerrar:close_}}));
 }
 function saveRifa(id,datos){const modo=datos.modo,anterior=id?S.rifas.find(x=>x.id===id):null,o={sid:datos.sid,nro:datos.numero.trim(),anio:+datos.anio,importe:num(datos.importe),modo,desde:anterior?anterior.desde:hoy()};
  if(!o.sid||!o.nro)return toast('Completá socio y número');if(id&&!anterior)return;
@@ -1104,6 +1104,7 @@ function totoPer(){const mAct=hoy().slice(0,7);let v=F.totoV||(F.totoM==='todo'?
   const meses=[...new Set(S.toto.map(x=>x.fecha.slice(0,7)).concat(mAct))].sort();const m=F.totoM&&meses.includes(F.totoM)?F.totoM:mAct;F.totoM=m;
   return{v,m,meses,L:S.toto.filter(x=>x.fecha.slice(0,7)===m),tit:mesTxt(m),low:mesTxt(m).toLowerCase(),key:m}}
 function puenteMutacion(sincronizar){return {obtenerRevision:()=>{if(PENDIENTES.length||guardando)throw new Error('Esperá a que termine el guardado.');return revision},bloquear:()=>{if(PENDIENTES.length||guardando)throw new Error('Esperá a que termine el guardado.');$('#side').inert=true},desbloquear:()=>estadoGuardado(),sincronizar:(datos,resultado)=>{if(PENDIENTES.length||guardando)throw new Error('Hay cambios pendientes.');sincronizar(datos,resultado)}}}
+function rifaPuente(){return puenteMutacion((datos,resultado)=>{if(resultado.anio!==undefined)F.rifaA=resultado.anio;cargarAgencia(datos);close_();toast(resultado.liberado?'Saldo a favor actualizado':'Rifa actualizada')})}
 function quiniPuente(){return puenteMutacion((datos,resultado)=>{cargarAgencia(datos);close_();toast(resultado.liberado?'Saldo a favor actualizado':'Quini actualizado')})}
 function seguroPuente(){return puenteMutacion((datos,resultado)=>{cargarAgencia(datos);close_();toast(resultado.liberado?'Saldo a favor actualizado':'Seguro actualizado')})}
 function loteriaPuente(){return puenteMutacion((datos,resultado)=>{cargarAgencia(datos);close_();toast(resultado.liberado?'Saldo a favor actualizado':'Venta actualizada')})}
