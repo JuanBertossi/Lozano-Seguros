@@ -2,11 +2,15 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm } from 'react-hook-form';
 import { usePanelEvent } from '../../../shared/hooks/usePanelEvent';
 import { ajustesSchema, type AjustesInput } from '../ajustes.schema';
+import { useAgregarAnioLoteria, type ResultadoAnioLoteria } from '../../../shared/hooks/useAgregarAnioLoteria';
+import type { PuenteOperacion } from '../../../shared/hooks/useOperacionSegura';
+const usarLoteriaSql=import.meta.env.VITE_LOTERIA_SQL==='true';
 
 const dias = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
 const semana = [1, 2, 3, 4, 5, 6, 0];
 
 interface VistaAjustes {
+  puenteAnio?:PuenteOperacion<ResultadoAnioLoteria>;
   config: AjustesInput;
   sorteos: { id: string; nombre: string; resumen: string }[];
   juegos: { id: string; nombre: string; dias: string[] }[];
@@ -31,7 +35,11 @@ const etiqueta = 'grid gap-1 text-sm font-medium';
 
 export function AjustesPage() {
   const vista = usePanelEvent<VistaAjustes>('agencia:ajustes');
-  if (!vista) return null;
+  return vista&&<Contenido vista={vista}/>;
+}
+function Contenido({vista}:{vista:VistaAjustes}) {
+  const operacion=useAgregarAnioLoteria({obtenerRevision:()=>{if(!vista.puenteAnio)throw new Error('Conexión de Lotería no disponible.');return vista.puenteAnio.obtenerRevision()},bloquear:()=>{if(!vista.puenteAnio)throw new Error('Conexión de Lotería no disponible.');vista.puenteAnio.bloquear()},desbloquear:()=>vista.puenteAnio?.desbloquear(),sincronizar:(datos,resultado)=>{if(!vista.puenteAnio)throw new Error('Conexión de Lotería no disponible.');vista.puenteAnio.sincronizar(datos,resultado)}});
+  const agregarAnio=()=>{if(!usarLoteriaSql){vista.agregarAnio();return}void operacion.enviar({})};
   return (
     <section aria-labelledby="titulo-ajustes">
       <header className="mb-[18px]">
@@ -42,9 +50,9 @@ export function AjustesPage() {
         <Precios key={JSON.stringify(vista.config)} vista={vista} />
         <div className={card}>
           <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2.5">
-            <h2>Sorteos de lotería</h2>
+            <h2>Sorteos de lotería</h2>{usarLoteriaSql&&operacion.error&&<p role="alert" className="text-sm text-[var(--bad)]">{operacion.error}</p>}{usarLoteriaSql&&operacion.bloqueado&&<button className={boton} disabled={operacion.procesando} onClick={()=>void operacion.enviar()}>Reintentar operación</button>}
             <div className="flex flex-wrap gap-2">
-              <button className={boton} onClick={vista.agregarAnio}>+ Los 3 Gordos del año que viene</button>
+              <button className={boton} disabled={operacion.bloqueado} onClick={agregarAnio}>+ Los 3 Gordos del año que viene</button>
               <button className={boton} onClick={() => vista.abrirSorteo()}>+ Sorteo</button>
             </div>
           </div>

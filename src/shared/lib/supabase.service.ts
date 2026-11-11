@@ -27,12 +27,13 @@ const auth = url && key?.startsWith('sb_publishable_')
   ? createClient(url, key, { auth: { persistSession: false, detectSessionInUrl: false } }).auth
   : null;
 const api = axios.create({ baseURL: url ? `${url.replace(/\/$/, '')}/rest/v1/rpc/` : undefined, timeout: 20000 });
-const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+export const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 const estadoKey = ['estado-agencia'];
 
-async function rpc<T>(nombre: string, parametros = {}) {
+export async function rpc<T>(nombre: string, parametros = {}) {
+  if (!auth) throw Object.assign(new Error('Falta configurar la conexión con Supabase.'), { code: 'SIN_CONFIGURACION' });
   const { data: { session } } = await auth!.getSession();
-  if (!session) throw new Error('La sesión venció. Volvé a ingresar.');
+  if (!session) throw Object.assign(new Error('La sesión venció. Volvé a ingresar.'), { code: 'SIN_SESION' });
   try {
     const { data } = await api.post<T>(nombre, parametros, {
       headers: { apikey: key, Authorization: `Bearer ${session.access_token}` },
@@ -41,7 +42,7 @@ async function rpc<T>(nombre: string, parametros = {}) {
   } catch (error) {
     const response = (error as AxiosError<{ code?: string; message?: string }>).response;
     if (response?.data.code === '42501') {
-      throw new Error('Esta cuenta no tiene permiso para acceder a los datos de la agencia.');
+      throw Object.assign(new Error('Esta cuenta no tiene permiso para acceder a los datos de la agencia.'), { code: '42501' });
     }
     throw Object.assign(new Error(response?.data.message || 'No se pudo conectar con Supabase.'), {
       code: response?.data.code,
@@ -65,11 +66,11 @@ export const agencia = auth && {
     }
   },
   leer() {
-    return queryClient.fetchQuery({ queryKey: estadoKey, queryFn: () => rpc<DatosAgencia>('lozano_leer') });
+    return queryClient.fetchQuery({ queryKey: estadoKey, queryFn: () => rpc<DatosAgencia>('agencia_leer') });
   },
   async guardar(parametros: Guardado, restaurar: boolean) {
     const revision = await queryClient.getMutationCache().build(queryClient, {
-      mutationFn: (entrada: Guardado) => rpc<number>(restaurar ? 'lozano_restaurar' : 'lozano_guardar', entrada),
+      mutationFn: (entrada: Guardado) => rpc<number>(restaurar ? 'agencia_restaurar' : 'agencia_guardar', entrada),
     }).execute(parametros);
     await queryClient.invalidateQueries({ queryKey: estadoKey });
     return revision;

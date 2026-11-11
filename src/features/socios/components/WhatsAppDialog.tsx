@@ -1,0 +1,13 @@
+import { useEffect,useRef } from 'react';
+import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { z } from 'zod';
+import { usePanelEvent } from '../../../shared/hooks/usePanelEvent';
+const schema=z.object({mensaje:z.string(),pdf:z.boolean()});
+type Datos=z.infer<typeof schema>;
+type Edicion={nombre:string;telefono:string;movil:boolean;mensaje:string;enviar:(datos:Datos)=>Promise<void>;cerrar:()=>void};
+const btn='cursor-pointer rounded-[9px] border border-solid border-[var(--ln)] bg-[var(--sf)] px-4 py-2.5 text-[15px] hover:bg-[var(--sf2)] disabled:opacity-50';
+export function WhatsAppDialog(){const e=usePanelEvent<Edicion>('agencia:whatsapp');return e&&<Formulario edicion={e}/>}
+function Formulario({edicion:e}:{edicion:Edicion}){const dialogo=useRef<HTMLDialogElement>(null),{register,handleSubmit,formState:{isSubmitting}}=useForm<Datos>({resolver:zodResolver(schema),defaultValues:{mensaje:e.mensaje,pdf:true}});useEffect(()=>{dialogo.current?.showModal()},[]);
+ return <dialog ref={dialogo} aria-labelledby="titulo-whatsapp" className="m-auto max-h-[90vh] w-[calc(100%-28px)] max-w-[700px] overflow-auto rounded-2xl border-0 bg-[var(--sf)] p-0 text-[var(--ink)] shadow-2xl backdrop:bg-[#0a0c0f73]" onCancel={event=>{event.preventDefault();if(!isSubmitting)e.cerrar()}}><form onSubmit={handleSubmit(e.enviar)}><div className="grid gap-3.5 px-6 pb-5 pt-[22px] max-[820px]:px-4"><h2 id="titulo-whatsapp" className="text-[22px] font-semibold">Enviar por WhatsApp</h2><p className="text-sm text-[var(--mu)]">A {e.nombre} · +{e.telefono}</p><label className="grid gap-1.5 text-[14.5px] font-medium">Mensaje<textarea rows={4} className="w-full rounded-lg border border-solid border-[var(--ln)] bg-[var(--sf)] px-3 py-[11px] text-[16px]" {...register('mensaje')}/></label><label className="flex items-center gap-2 text-sm"><input type="checkbox" {...register('pdf')}/>Adjuntar estado de cuenta en PDF</label><p className="text-sm text-[var(--mu)]">{e.movil?<>Se abre el menú para compartir: elegí <b>WhatsApp</b> y el chat de {e.nombre.split(' ')[0]}.</>:<>El PDF se descarga en tu compu y se abre el chat con el mensaje escrito. En WhatsApp tocá el clip <b>📎 → Documento</b> y elegí el PDF de <b>Descargas</b> (o arrastralo al chat).</>}</p></div><div className="flex justify-end gap-2 border-t border-solid border-[var(--ln)] px-6 py-4"><button type="button" className={btn} disabled={isSubmitting} onClick={e.cerrar}>Cancelar</button><button disabled={isSubmitting} className={`${btn} !border-[var(--ac)] !bg-[var(--ac)] text-white`}>{isSubmitting?'Preparando…':'Enviar'}</button></div></form></dialog>;
+}

@@ -11,9 +11,3 @@ export const seguroSchema = z.object({
 
 export type SeguroInput = z.infer<typeof seguroSchema>;
 
-export const socioRapidoSchema = z.object({
-  nombre: z.string().trim().min(1, 'Poné el nombre del socio.'),
-  telefono: z.string().trim(),
-});
-
-export type SocioRapidoInput = z.infer<typeof socioRapidoSchema>;

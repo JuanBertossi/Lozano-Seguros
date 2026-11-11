@@ -12,7 +12,6 @@ const addDays=(s,n)=>{const d=parse(s);d.setDate(d.getDate()+n);return toISO(d)}
 const addMonths=(s,n)=>{const d=parse(s);const day=d.getDate();d.setDate(1);d.setMonth(d.getMonth()+n);d.setDate(Math.min(day,new Date(d.getFullYear(),d.getMonth()+1,0).getDate()));return toISO(d)};
 const days=s=>Math.round((parse(s)-parse(hoy()))/864e5);
 const fd=s=>s?s.split('-').reverse().join('/'):'—';
-const MESES=['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
 const DIAS=['domingo','lunes','martes','miércoles','jueves','viernes','sábado'];
 const fdl=s=>s?DIAS[parse(s).getDay()]+' '+fd(s).slice(0,5):'—';
 const NF=new Intl.NumberFormat('es-AR',{style:'currency',currency:'ARS',maximumFractionDigits:0});
@@ -21,9 +20,6 @@ const NF_DEC=new Intl.NumberFormat('es-AR',{style:'currency',currency:'ARS',mini
 const money=n=>{const v=redondear(n);return (Math.round(v*100)%100?NF_DEC:NF).format(v)};
 const num=v=>{const n=parseFloat(String(v).replace(/\./g,'').replace(',','.'));return isNaN(n)?0:n};
 const sum=(a,f)=>redondear(a.reduce((s,x)=>s+(f?f(x):x),0));
-const val=id=>{const e=document.getElementById(id);return e?e.value.trim():''};
-const radio=n=>{const e=document.querySelector(`input[name="${n}"]:checked`);return e?e.value:''};
-
 const MEDIOS={efectivo:'Efectivo',transferencia:'Transferencia',echeq:'E-cheq',cheque:'Cheque físico',mp:'Mercado Pago'};
 const PLANES={contado:'Contado',3:'3 cuotas',6:'6 cuotas',12:'12 cuotas'};
 const COL={pago:'var(--ok)',det:'var(--ink)',seg:'var(--seg)',q6:'var(--q6)',lot:'var(--lot)',qui:'var(--qui)',rifa:'var(--rifa)',toto:'var(--toto)'};
@@ -92,17 +88,13 @@ function estadoNegocio(){
 
 function estadoGuardado(){
   const pendiente=PENDIENTES.length>0;
-  for(const id of ['main','side','ov'])$('#'+id).inert=pendiente;
-  const panel=$('#estado-guardado');
-  panel.hidden=!pendiente;
-  if(!pendiente)return;
-  if(!errorGuardado){
-    panel.textContent='Guardando en Supabase…';
-    return;
-  }
-  panel.innerHTML='<p class="bad"></p><div class="acts"><button class="btn sm" onclick="descartarGuardado()">Volver a cargar</button><button class="btn sm p" onclick="procesarGuardados()">Reintentar</button></div>';
-  panel.querySelector('p').textContent='Cambios sin confirmar. '+errorGuardado.message;
-  panel.querySelector('.p').hidden=errorGuardado.code==='40001';
+  for(const id of ['main','side'])$('#'+id).inert=pendiente;
+  window.dispatchEvent(new CustomEvent('agencia:estado-guardado',{detail:pendiente?{
+    mensaje:errorGuardado?.message,
+    conflicto:errorGuardado?.code==='40001',
+    recargar:descartarGuardado,
+    reintentar:procesarGuardados,
+  }:null}));
 }
 
 async function procesarGuardados(){
@@ -178,7 +170,6 @@ function q6Fechas(desde,hasta){const out=new Set();let f=desde;while(f<=hasta){i
 const juegaEn=(s,f)=>{const d=parse(f).getDay();return s.activo&&s.q6.dias.length>0&&(s.q6.dias.includes(d)||!S.conf.q6Dias.includes(d))};
 const fracTxt=v=>{const s=so(v.soId);return s&&v.frac>=s.frac?'Entero':v.frac+(s?' de '+s.frac:'')};
 const fracOpts=(mx,sel)=>Array.from({length:mx},(_,i)=>i+1).map(n=>`<option value="${n}" ${n===sel?'selected':''}>${n===mx?`Entero (${mx} fracciones)`:n+(n>1?' fracciones':' fracción')}</option>`).join('');
-const waNum=t=>{let n=String(t).replace(/\D/g,'').replace(/^00/,'').replace(/^54/,'').replace(/^9/,'').replace(/^0/,'');if(n.length===12)for(const k of[2,3,4])if(n.substr(k,2)==='15'){n=n.slice(0,k)+n.slice(k+2);break}return n.length===10?'549'+n:''};
 function q6Auto(){const H=hoy();let n=0;S.socios.forEach(s=>{if(!s.activo||!s.q6.auto||!s.q6.dias.length)return;
   q6Fechas(s.q6.desde||H,H).forEach(f=>{if(juegaEn(s,f)&&!S.q6.some(j=>j.sid===s.id&&j.fecha===f)&&!S.q6skip.includes(s.id+'|'+f)){S.q6.push({id:uid(),sid:s.id,fecha:f,monto:q6Precio(f)*(s.q6.cant||1),pagado:false,auto:true,ts:'',por:'auto'});n++}})});if(n)save();return n}
 const q6Prox=()=>q6Fechas(hoy(),addDays(hoy(),30))[0];
@@ -213,14 +204,8 @@ function cuenta(sid){const P=pendientes(sid);const deuda=sum(P,p=>p.imp),fv=favo
   const proximo=sum(movs(sid).filter(m=>m.fut&&!m.pag),m=>m.imp);
   return{P,deuda,favor:fv,neto:deuda-fv,debe:Math.max(0,deuda-fv),aFavor:Math.max(0,fv-deuda),proximo}}
 const neto=sid=>cuenta(sid).debe;
-const saldoTag=sid=>{const c=cuenta(sid);return c.debe?`<span class="bad">Debe ${money(c.debe)}</span>`:c.aFavor?`<span class="ok">A favor ${money(c.aFavor)}</span>`:'<span class="ok">Al día</span>'};
-const chips=a=>a.map(k=>`<span class="chip" style="--c:${COL[k]}">${NOMBRE[k]}</span>`).join('');
-const pay=(on,fn)=>{const m=String(fn).match(/tg\('(\w+)','([^']+)'\)/);const x=m&&S[m[1]].find(v=>v.id===m[2]);if(on)return x?`<button class="pay si" onclick="event.stopPropagation();editPayment('${m[1]}','${m[2]}')">✓ Pagado · editar</button>`:'<span class="pay si">✓ Pagado</span>';
-  const tot=x?(m[1]==='lot'?x.frac*x.precio:x.monto):0,ab=x&&x.abono>0?x.abono:0;
-  return x?`<button class="pay no" onclick="event.stopPropagation();openCobro('${x.sid}','${m[1]}|${m[2]}')">${ab?'Cobrar '+money(Math.max(0,tot-ab)):'Cobrar'}</button>${ab?`<span class="parc">Pagó ${money(ab)} de ${money(tot)}</span>`:''}`:''};
 /* lo cobrado y lo que falta de una jugada/venta, contando pagos parciales */
 const cobr=(x,t)=>x.pagado?t:Math.min(t,x.abono||0),falt=(x,t)=>x.pagado?0:Math.max(0,redondear(t-(x.abono||0)));
-const cobrarBtn=(sid,key,label)=>`<button class="pay no" onclick="event.stopPropagation();openCobro('${sid}','${key}')">${label||'Cobrar'}</button>`;
 
 /* ============ navegación ============ */
 let V='inicio',TAB='q6',SID=null;
@@ -231,86 +216,41 @@ function sidebar(){
   const detalle=CUR?{
     nombre:CUR.nombre,activa,
     entradas:NAV.map(([clave,nombre,color])=>({clave,nombre,color:color?COL[color]:undefined})),
-    buscar:buscar,navegar:nav,abrir:verSocio,salir,
+    busqueda:{socios:S.socios,loteria:S.lot,sorteos:S.sorteos,rifas:S.rifas},navegar:nav,abrir:verSocio,salir,
   }:null;
   window.dispatchEvent(new CustomEvent('agencia:navegacion',{detail:detalle}));
 }
 function nav(k){if(k.startsWith('juegos:')){V='juegos';TAB=k.split(':')[1]}else V=k;render()}
 function verSocio(id){if(id!==SID)STAB='det';SID=id;V='socio';render()}
-/* achica los montos que no entran en su tarjeta */
-function fitNums(){document.querySelectorAll('.kpi b, .bal-c b, .cb-sum b').forEach(b=>{b.style.fontSize='';b.style.whiteSpace='';b.style.overflowWrap='';b.style.lineHeight='';const w=b.clientWidth;if(!w)return;const sw=b.scrollWidth;if(sw>w){const fs=parseFloat(getComputedStyle(b).fontSize);const nf=Math.floor(fs*w/sw*10)/10-.3;b.style.fontSize=Math.max(12,nf)+'px';if(nf<12){b.style.whiteSpace='normal';b.style.overflowWrap='anywhere';b.style.lineHeight='1.2'}}})}
-{let t;window.addEventListener('resize',()=>{clearTimeout(t);t=setTimeout(fitNums,80)});if(document.fonts&&document.fonts.ready)document.fonts.ready.then(fitNums)}
-function render(){if(!CUR)return showLogin();q6Auto();sidebar();renderContenido();enh($('#main'));fitNums();window.scrollTo(0,0)}
-function rerender(){if(!CUR)return showLogin();const y=window.scrollY;q6Auto();sidebar();renderContenido();enh($('#main'));fitNums();window.scrollTo(0,y)}
+function render(){if(!CUR)return showLogin();q6Auto();sidebar();renderContenido();window.scrollTo(0,0)}
+function rerender(){if(!CUR)return showLogin();const y=window.scrollY;q6Auto();sidebar();renderContenido();window.scrollTo(0,y)}
 
-/* buscador rápido: socio, N° de socio o N° de lotería / rifa */
-function buscar(texto){
-  const q=texto.trim().toLowerCase();
-  if(!q)return [];
-  const resultados=[];
-  S.socios.forEach(s=>{
-    if(s.nombre.toLowerCase().includes(q)||String(s.nro).toLowerCase()===q||(s.dni||'').includes(q))
-      resultados.push({id:s.id,principal:s.nombre,secundario:'Socio '+s.nro});
-  });
-  S.lot.forEach(l=>{
-    if(String(l.numero).includes(q))
-      resultados.push({id:l.sid,principal:l.numero+' · '+sname(l.sid),secundario:(so(l.soId)||{}).nombre||''});
-  });
-  S.socios.forEach(s=>s.fijos.forEach(f=>{
-    if(String(f.numero).includes(q))
-      resultados.push({id:s.id,principal:f.numero+' · '+s.nombre,secundario:'Número fijo'});
-  }));
-  S.rifas.forEach(r=>{
-    if(String(r.nro).includes(q))
-      resultados.push({id:r.sid,principal:'Rifa '+r.nro+' · '+sname(r.sid),secundario:String(r.anio)});
-  });
-  return resultados.slice(0,12);
-}
-const VIEWS={};
 /* ============ INICIO ============ */
-VIEWS.inicio=()=>{const H=hoy();const chq=cheques();const P=pendientes();const tot=sum(S.socios,s=>neto(s.id));
-  const porT=k=>sum(P.filter(p=>p.t===k),p=>p.imp);
-  const venc=S.seguros.filter(x=>days(x.venc)>=-7&&days(x.venc)<=30).sort((a,b)=>a.venc.localeCompare(b.venc));
-  const sa=sorteoAct();const vend=sa?S.lot.filter(l=>l.soId===sa.id):[];
-  const con=new Set(vend.map(v=>v.sid)),noq=new Set(S.ofertas.filter(o=>sa&&o.soId===sa.id).map(o=>o.sid));
-  const sinOf=!sa?[]:socOrd().filter(s=>!con.has(s.id)&&!noq.has(s.id)),noCompr=socOrd().filter(s=>noq.has(s.id));
-  const prox=q6Prox();const ab=prox?S.socios.filter(s=>juegaEn(s,prox)):[];const cargadas=S.q6.filter(j=>j.fecha===prox&&ab.some(a=>a.id===j.sid));
-  const deud={};P.forEach(p=>deud[p.sid]=(deud[p.sid]||0)+p.imp);Object.keys(deud).forEach(k=>deud[k]=Math.max(0,deud[k]-favor(k)));const dl=Object.entries(deud).filter(e=>e[1]>0).sort((a,b)=>b[1]-a[1]);
-  return `
-  ${S._migrado?`<div class="banner"><span>Se pasaron tus clientes y seguros de la versión anterior. Revisá el medio de pago de cada seguro.</span><button class="btn sm" onclick="delete S._migrado;save();render()">Listo</button></div>`:''}
-  <div class="head"><div><h1>Hola${CUR?', '+esc(CUR.nombre.split(' ')[0]):''}</h1><div class="sub">${DIAS[parse(H).getDay()]} ${fd(H)}</div></div></div>
-  <div class="kgrid">
-    <div class="ksum">
-      <div class="kpi kmain"><small>Te deben en total</small><b class="${tot?'bad':''}">${money(tot)}</b>
-      ${(()=>{const fv=sum(S.socios,s=>cuenta(s.id).aFavor);return fv?`<div class="kfav" title="Plata que te dieron de más"><small>A favor de socios</small><b class="ok">${money(fv)}</b></div>`:''})()}</div>
-    </div>
-    <div class="kprod">
-      ${['seg','q6','lot','qui','rifa'].map(k=>`<div class="kpi" style="border-top:3px solid ${COL[k]}"><small>${NOMBRE[k]}</small><b>${money(porT(k))}</b></div>`).join('')}
-    </div>
-  </div>
-  <div class="two">
-    <div class="card acc" style="--c:var(--lot)"><div class="ch"><div><h2>${sa?esc(sa.nombre):'Lotería'}</h2><div class="mu small">${sa?`${fd(sa.fecha)} · vendidas ${sum(vend,v=>v.frac)} fracciones a ${con.size} socios`:''}</div></div>
-      <button class="btn sm" onclick="nav('juegos:lot')">Ir a Lotería</button></div>
-      <p class="lbl" style="margin-bottom:4px">Sin ofrecer todavía (${sinOf.length})</p>
-      <div class="list">${sinOf.length?`<div><span class="small">${sinOf.slice(0,12).map(s=>esc(s.nombre)).join(', ')}${sinOf.length>12?` y ${sinOf.length-12} más`:''}</span></div>`:'<div class="empty">Ya le ofreciste a todos.</div>'}</div>
-      ${noCompr.length?`<p class="lbl" style="margin:12px 0 4px">Le ofreciste y no compró (${noCompr.length})</p><p class="small">${noCompr.map(s=>esc(s.nombre)).join(', ')}</p>`:''}
-    </div>
-    <div>
-      ${chq.length?`<div class="card acc" style="--c:var(--ok)"><div class="ch"><div><h2>Cheques a cobrar</h2><div class="mu small">Cheques y e-cheqs con fecha de cobro cargada.</div></div></div>
-        <div class="list">${chq.map(c=>`<div><span style="cursor:pointer" onclick="verSocio('${c.sid}')">${esc(sname(c.sid))} · <b>${money(c.monto)}</b><br><span class="mu small">${medioTxt(c.medio,c.det)}</span></span><span class="acts" style="align-items:center">${vtagC(c.det.fcobro)}<button class="btn sm" onclick="depositar('${c.k}')">Depositado</button></span></div>`).join('')}</div></div>`:''}
-      <div class="card acc" style="--c:var(--seg)"><div class="ch"><h2>Seguros por vencer</h2></div>
-        <div class="list">${venc.map(x=>`<div style="cursor:pointer" onclick="verSocio('${x.sid}')"><span>${esc(sname(x.sid))}<br><span class="mu small">${esc(x.desc)}</span></span>${vtag(x.venc)}</div>`).join('')||'<div class="empty">Nada vence en los próximos 30 días.</div>'}</div></div>
-    </div>
-  </div>
-  <div class="card"><div class="ch"><h2>Quién te debe</h2></div>
-    <div class="list">${dl.slice(0,12).map(([sid,m])=>`<div style="cursor:pointer" onclick="verSocio('${sid}')"><span>${esc(sname(sid))} <span class="mu small">${chips([...new Set(P.filter(p=>p.sid===sid).map(p=>p.t))])}</span></span><b class="bad">${money(m)}</b></div>`).join('')||'<div class="empty">Nadie te debe nada. 🎉</div>'}</div></div>`};
-function vtag(v){const n=days(v);return n<0?`<span class="tag t-b">Venció hace ${-n} d</span>`:n===0?'<span class="tag t-b">Vence hoy</span>':n<=7?`<span class="tag t-w">Vence en ${n} d</span>`:`<span class="tag">Vence ${fd(v)}</span>`}
+function publicarInicio(){
+ if(V!=='inicio'){window.dispatchEvent(new CustomEvent('agencia:inicio',{detail:null}));return}
+ const H=hoy(),chq=cheques(),P=pendientes(),tot=sum(S.socios,s=>neto(s.id));
+ const venc=S.seguros.filter(x=>days(x.venc)>=-7&&days(x.venc)<=30).sort((a,b)=>a.venc.localeCompare(b.venc));
+ const sa=sorteoAct(),vend=sa?S.lot.filter(l=>l.soId===sa.id):[];
+ const con=new Set(vend.map(v=>v.sid)),noq=new Set(S.ofertas.filter(o=>sa&&o.soId===sa.id).map(o=>o.sid));
+ const sinOf=!sa?[]:socOrd().filter(s=>!con.has(s.id)&&!noq.has(s.id)),noCompr=socOrd().filter(s=>noq.has(s.id));
+ const deud={};P.forEach(p=>deud[p.sid]=(deud[p.sid]||0)+p.imp);Object.keys(deud).forEach(k=>deud[k]=Math.max(0,deud[k]-favor(k)));
+ const dl=Object.entries(deud).filter(e=>e[1]>0).sort((a,b)=>b[1]-a[1]);
+ const view={nombre:CUR?CUR.nombre.split(' ')[0]:'',fecha:DIAS[parse(H).getDay()]+' '+fd(H),migrado:!!S._migrado,
+ total:money(tot),debe:!!tot,favor:money(sum(S.socios,s=>cuenta(s.id).aFavor)),tieneFavor:!!sum(S.socios,s=>cuenta(s.id).aFavor),
+ productos:['seg','q6','lot','qui','rifa'].map(k=>({nombre:NOMBRE[k],color:COL[k],monto:money(sum(P.filter(p=>p.t===k),p=>p.imp))})),
+ sorteo:sa?{nombre:sa.nombre,resumen:fd(sa.fecha)+' · vendidas '+sum(vend,v=>v.frac)+' fracciones a '+con.size+' socios'}:{nombre:'Lotería',resumen:''},
+ sinOf:sinOf.map(s=>s.nombre),noCompr:noCompr.map(s=>s.nombre),
+ cheques:chq.map(c=>({id:c.k,sid:c.sid,nombre:sname(c.sid),monto:money(c.monto),medio:[MEDIOS[c.medio]||'',c.det.banco,c.det.nro?'N° '+c.det.nro:'',c.det.librador,c.det.fcobro?(c.medio==='echeq'?'paga ':'cobro ')+fd(c.det.fcobro):'',c.det.dep?'depositado':''].filter(Boolean).join(' · '),fecha:days(c.det.fcobro)<0?'Para depositar':days(c.det.fcobro)===0?'Se cobra hoy':'En '+days(c.det.fcobro)+' d · '+fd(c.det.fcobro)})),
+ vencimientos:venc.map(x=>({id:x.id,sid:x.sid,nombre:sname(x.sid),descripcion:x.desc,fecha:days(x.venc)<0?'Venció hace '+(-days(x.venc))+' d':days(x.venc)===0?'Vence hoy':days(x.venc)<=7?'Vence en '+days(x.venc)+' d':'Vence '+fd(x.venc),dias:days(x.venc)})),
+ deudores:dl.slice(0,12).map(([sid,m])=>({sid,nombre:sname(sid),monto:money(m),productos:[...new Set(P.filter(p=>p.sid===sid).map(p=>p.t))].map(k=>({nombre:NOMBRE[k],color:COL[k]}))})),
+ verSocio,depositar,loteria:()=>nav('juegos:lot'),cerrarAviso:()=>{delete S._migrado;save();render()}};
+ window.dispatchEvent(new CustomEvent('agencia:inicio',{detail:view}));
+}
 
 /* ============ SOCIOS ============ */
 function renderContenido(){
   if(V==='socio'&&!soc(SID))V='socios';
 
-  $('#panel-legacy').innerHTML=['socios','cheques','ajustes','actividad','seguros'].includes(V)?'':VIEWS[V]();
   const filas=V==='socios'?[...S.socios]
     .sort((a,b)=>Number(b.activo)-Number(a.activo)||a.nombre.localeCompare(b.nombre))
     .map(s=>{
@@ -323,6 +263,18 @@ function renderContenido(){
       };
     }):null;
   window.dispatchEvent(new CustomEvent('agencia:socios',{detail:filas?{filas,abrir:verSocio,editar:openSocio}:null}));
+  publicarSocio();
+  publicarSocioDetalle();
+  publicarSocioJugadas();
+  publicarSocioSeguros();
+  publicarSocioRifas();
+  publicarSocioLoteria();
+  publicarInicio();
+  publicarToto();
+  publicarQuini();
+  publicarLoteria();
+  publicarQuiniela();
+  publicarRifa();
   publicarCheques();
   publicarAjustes();
   publicarActividad();
@@ -330,20 +282,17 @@ function renderContenido(){
 }
 
 let STAB='det';
-function balPanel(sid){const c=cuenta(sid);const porT={};c.P.forEach(p=>porT[p.t]=(porT[p.t]||0)+p.imp);
-  const fin=c.debe?['bad','Debe',c.debe,'Lo que te tiene que pagar hoy']:c.aFavor?['ok','Tiene a favor',c.aFavor,'Se descuenta en el próximo cobro']:['ok','Al día',0,'No debe nada vencido'];
-  return `<div class="bal"><div class="bal-c"><small>Deuda vencida</small><b class="${c.deuda?'bad':''}">${money(c.deuda)}</b><span>${Object.keys(porT).length?Object.entries(porT).map(([k,v])=>`<span class="chip" style="--c:${COL[k]}">${NOMBRE[k]} ${money(v)}</span>`).join(''):'Sin deuda'}</span></div>
-  <div class="bal-op">−</div><div class="bal-c"><small>Saldo a favor</small><b class="${c.favor?'ok':''}">${money(c.favor)}</b><span>Plata que dejó de más</span></div>
-  <div class="bal-op">=</div><div class="bal-c bal-f ${fin[0]}"><small>${fin[1]}</small><b>${money(fin[2])}</b><span>${fin[3]}</span></div>
-  ${c.proximo?`<div class="bal-c bal-x"><small>Por vencer</small><b>${money(c.proximo)}</b><span>Cuotas futuras, no suman a la deuda</span></div>`:''}</div>`}
-VIEWS.socio=()=>{const s=soc(SID);if(!s)return '';const P=pendientes(s.id);const d=neto(s.id),fv=favor(s.id);const dk=k=>sum(P.filter(p=>p.t===k),p=>p.imp);
-  const cnt={seg:S.seguros.filter(x=>x.sid===s.id).length,q6:S.q6.filter(x=>x.sid===s.id).length,lot:S.lot.filter(x=>x.sid===s.id).length,qui:S.quiniela.filter(x=>x.sid===s.id).length,rifa:S.rifas.filter(x=>x.sid===s.id).length};
-  return `<div class="head"><div><button class="btn g sm" onclick="nav('socios')">← Socios</button><h1 style="margin-top:6px">${esc(s.nombre)}</h1>
-    <div class="sub">Socio <span class="mono">${esc(s.nro)}</span>${s.tel?' · '+esc(s.tel):''}${s.dir?' · '+esc(s.dir):''}${porTxt(s)?' · <span class="by">'+porTxt(s)+'</span>':''}${s.activo?'':' · <span class="tag">archivado</span>'}</div></div>
-    <div class="acts" style="align-items:center"><button class="btn p" onclick="openCobro('${s.id}')">Registrar cobro</button><button class="btn" onclick="wsp('${s.id}')">WhatsApp</button><button class="btn" onclick="pdfSocio('${s.id}')">⬇ PDF</button><button class="btn g" onclick="openSocio('${s.id}')">Editar</button></div></div>
-  ${balPanel(s.id)}
-  <div class="tabs">${['det','seg','q6','lot','qui','rifa'].map(k=>`<button class="tab ${STAB===k?'on':''}" style="--c:${COL[k]}" onclick="STAB='${k}';rerender()"><i></i>${NOMBRE[k]}${cnt[k]?` <span class="mu small">${cnt[k]}</span>`:''}</button>`).join('')}</div>
-  ${({det:sDet,seg:sSeg,q6:sQ6,lot:sLot,qui:sQui,rifa:sRifa}[STAB])(s)}`};
+function publicarSocio(){
+ if(V!=='socio'||!soc(SID)){window.dispatchEvent(new CustomEvent('agencia:socio',{detail:null}));return}
+ const s=soc(SID),c=cuenta(s.id),porT={};c.P.forEach(p=>porT[p.t]=(porT[p.t]||0)+p.imp);
+ const cnt={seg:S.seguros.filter(x=>x.sid===s.id).length,q6:S.q6.filter(x=>x.sid===s.id).length,lot:S.lot.filter(x=>x.sid===s.id).length,qui:S.quiniela.filter(x=>x.sid===s.id).length,rifa:S.rifas.filter(x=>x.sid===s.id).length};
+ const autor=(()=>{const a=s.por&&s.por!=='auto'?'Cargó '+uname(s.por):s.por==='auto'?'Automático':'';const m=s.modPor&&s.modPor!==s.por?'editó '+uname(s.modPor)+(s.modTs?' '+fd(s.modTs.slice(0,10)):''):'';return[a,m].filter(Boolean).join(' · ')})();
+ const vista={nombre:s.nombre,numero:s.nro,telefono:s.tel||'',direccion:s.dir||'',activo:!!s.activo,autor,
+ deuda:money(c.deuda),tieneDeuda:!!c.deuda,favor:money(c.favor),tieneFavor:!!c.favor,resultado:c.debe?'Debe':c.aFavor?'Tiene a favor':'Al día',resultadoMonto:money(c.debe||c.aFavor||0),resultadoTexto:c.debe?'Lo que te tiene que pagar hoy':c.aFavor?'Se descuenta en el próximo cobro':'No debe nada vencido',resultadoDeuda:!!c.debe,proximo:c.proximo?money(c.proximo):'',
+ productos:Object.entries(porT).map(([k,m])=>({nombre:NOMBRE[k],color:COL[k],monto:money(m)})),tab:STAB,tabs:['det','seg','q6','lot','qui','rifa'].map(k=>({id:k,nombre:NOMBRE[k],color:COL[k],cantidad:cnt[k]||0})),
+ volver:()=>nav('socios'),cobrar:()=>openCobro(s.id),whatsapp:()=>wsp(s.id),pdf:()=>pdfSocio(s.id),editar:()=>openSocio(s.id),cambiarTab:k=>{STAB=k;rerender()}};
+ window.dispatchEvent(new CustomEvent('agencia:socio',{detail:vista}));
+}
 function movs(sid){const M=[];const H=hoy();
   const pagTxt=(f,m,d)=>'Pagado el '+fd(f)+(m?' · '+medioTxt(m,d):'');
   S.seguros.filter(x=>x.sid===sid).forEach(x=>x.cuotas.forEach((c,i)=>{if(c.anulado)return;const f=c.pago&&c.venc>H?c.pago:c.venc,imp=c.pago?c.imp:Math.max(0,redondear(c.imp-(c.abono||0)));
@@ -358,25 +307,50 @@ function movs(sid){const M=[];const H=hoy();
 function cobroSub(c){const A=c.aplicados||[];const tot=A.filter(a=>a.completo).length,par=A.filter(a=>!a.completo).length;
   return [tot?`Saldó ${tot} ${tot>1?'conceptos':'concepto'}`:'',par?`abono parcial en ${par}`:'',c.usado?'usó '+money(c.usado)+' del saldo a favor':'',c.quedo?'dejó '+money(c.quedo)+' a favor':''].filter(Boolean).join(' · ').replace(/^./,x=>x.toUpperCase())||'Pago a cuenta'}
 function diaTit(f){const H=hoy();return (f===H?'Hoy · ':f===addDays(H,-1)?'Ayer · ':'')+DIAS[parse(f).getDay()]+' '+fd(f)}
-function sDet(s){const M=movs(s.id);const f=F.detF||'todo';
-  // Solo se fusiona cuando un único cobro saldó por completo un único concepto.
-  // Los pagos parciales, a cuenta o compartidos conservan sus movimientos individuales.
-  const ocultos=new Set(), fusionados=new Map();
-  S.cobros.filter(c=>c.sid===s.id&&!c.anulado&&c.monto>0&&!(c.quedo||0)&&!(c.usado||0)&&!(c.liberado||0)&&Array.isArray(c.aplicados)&&c.aplicados.length===1).forEach(c=>{
-    const a=c.aplicados[0];if(!a.completo||!a.ref)return;const key=a.ref.join('|');
-    const concepto=M.find(m=>m.t!=='pago'&&m.ref.join('|')===key&&m.pag&&!m.fut);
-    const otros=S.cobros.filter(x=>x.sid===s.id&&!x.anulado&&Array.isArray(x.aplicados)&&(x.aplicados||[]).some(z=>z.ref&&z.ref.join('|')===key));
-    if(!concepto||otros.length!==1||redondear(a.imp??c.monto)!==redondear(concepto.imp)||redondear(c.monto)!==redondear(concepto.imp))return;
-    ocultos.add(c.id);fusionados.set(key,c);
-  });
-  const L=M.filter(m=>!m.fut&&!(m.t==='pago'&&ocultos.has(m.ref[1]))&&(f==='todo'||(f==='debe'&&!m.pag&&m.t!=='pago'))).map(m=>{const c=fusionados.get(m.ref.join('|'));return {...m,cobroUnico:c,sub:c?`Cobrado el ${fd(c.fecha)}${c.medio?' · '+medioTxt(c.medio,c.det):''}`:m.sub}});
-  const est=m=>m.t==='pago'?'<span class="tag t-ok">Cobro</span>':m.cobroUnico?'<span class="pay si">✓ Pagado</span>':m.pag?`<button class="pay si" title="Tocá para anular el pago" onclick="anularPago('${m.ref.join('|')}')">✓ Pagado</button>`:cobrarBtn(s.id,m.ref.join('|'));
-  const fila=m=>`<tr class="${m.pag?'r-ok':'r-bad'}"><td class="mu" style="white-space:nowrap;width:60px">${horaAR(m.h)||'—'}</td><td style="width:120px">${chips([m.t])}</td><td>${m.txt}${m.sub?`<br><span class="mu small">${m.sub}</span>`:''}${porTxt(m.o)?`<br><span class="by">${m.t==='pago'&&m.o.por&&m.o.por!=='auto'?'Cobró '+esc(uname(m.o.por)):porTxt(m.o)}</span>`:''}</td><td class="r amt">${m.t==='pago'?'+ ':''}${money(m.imp)}</td><td style="width:120px">${est(m)}</td><td><div class="acts"><button class="btn sm g" onclick="editMovement('${m.ref[0]}','${m.ref[1]}',${m.ref[2]??'null'})">Editar</button>${m.cobroUnico?`<button class="btn sm g" onclick="editCobro('${m.cobroUnico.id}')">Editar cobro</button><button class="btn sm g d" onclick="anularCobro('${m.cobroUnico.id}')">Anular cobro</button>`:`<button class="btn sm g d" onclick="anularMovimiento('${m.ref[0]}','${m.ref[1]}',${m.ref[2]??'null'})">Anular</button>`}</div></td></tr>`;
-  let body='',dia=null;L.forEach(m=>{if(m.f!==dia){dia=m.f;const tot=L.filter(x=>x.f===dia);const deb=sum(tot.filter(x=>!x.pag),x=>x.imp),cob=sum(tot.filter(x=>x.t==='pago'),x=>x.imp);
-    body+=`<tr class="dayh"><td colspan="6"><b>${diaTit(dia)}</b><span class="mu small" style="float:right">${cob?`<span class="ok">Cobrado ${money(cob)}</span>`:''}${cob&&deb?' · ':''}${deb?`<span class="bad">Debe ${money(deb)}</span>`:''}</span></td></tr>`}body+=fila(m)});
-  return `<div class="card"><div class="ch"><div><h2>Todo lo que hizo</h2><div class="mu small">Lo más nuevo arriba · hora de Argentina</div></div><div class="seg">${[['todo','Todo'],['debe','Lo que debe']].map(([k,t])=>`<button class="${f===k?'on':''}" onclick="F.detF='${k}';rerender()">${t}</button>`).join('')}</div></div>
-  ${L.length?`<div class="tw"><table><thead><tr><th>Hora</th><th>Qué</th><th>Detalle</th><th class="r">Monto</th><th>Estado</th><th></th></tr></thead><tbody>${body}</tbody>
-  <tfoot><tr><td colspan="4">${L.length} movimientos${favor(s.id)?` · <span class="ok">a favor ${money(favor(s.id))}</span>`:''}</td><td>${saldoTag(s.id)}</td><td></td></tr></tfoot></table></div><div class="legend"><span><i style="background:var(--okb)"></i>Pagado / cobro</span><span><i style="background:var(--badb)"></i>Debe</span></div>`:`<div class="empty">${f==='debe'?'No debe nada.':'No hay movimientos.'}</div>`}</div>`}
+function publicarSocioDetalle(){
+ if(V!=='socio'||STAB!=='det'||!soc(SID)){window.dispatchEvent(new CustomEvent('agencia:socio-detalle',{detail:null}));return}
+ const s=soc(SID),M=movs(s.id),f=F.detF||'todo',ocultos=new Set(),fusionados=new Map();
+ S.cobros.filter(c=>c.sid===s.id&&!c.anulado&&c.monto>0&&!(c.quedo||0)&&!(c.usado||0)&&!(c.liberado||0)&&Array.isArray(c.aplicados)&&c.aplicados.length===1).forEach(c=>{
+  const a=c.aplicados[0];if(!a.completo||!a.ref)return;const key=a.ref.join('|'),concepto=M.find(m=>m.t!=='pago'&&m.ref.join('|')===key&&m.pag&&!m.fut);
+  const otros=S.cobros.filter(x=>x.sid===s.id&&!x.anulado&&Array.isArray(x.aplicados)&&(x.aplicados||[]).some(z=>z.ref&&z.ref.join('|')===key));
+  if(!concepto||otros.length!==1||redondear(a.imp??c.monto)!==redondear(concepto.imp)||redondear(c.monto)!==redondear(concepto.imp))return;ocultos.add(c.id);fusionados.set(key,c);
+ });
+ const L=M.filter(m=>!m.fut&&!(m.t==='pago'&&ocultos.has(m.ref[1]))&&(f==='todo'||(f==='debe'&&!m.pag&&m.t!=='pago'))).map(m=>{const c=fusionados.get(m.ref.join('|'));return {...m,cobroUnico:c,sub:c?'Cobrado el '+fd(c.fecha)+(c.medio?' · '+medioTxt(c.medio,c.det):''):m.sub}});
+ const grupos=[];for(const m of L){let g=grupos[grupos.length-1];if(!g||g.fecha!==m.f){const tot=L.filter(x=>x.f===m.f),deb=sum(tot.filter(x=>!x.pag),x=>x.imp),cob=sum(tot.filter(x=>x.t==='pago'),x=>x.imp);g={fecha:m.f,titulo:diaTit(m.f),debe:deb?money(deb):'',cobrado:cob?money(cob):'',filas:[]};grupos.push(g)}
+  g.filas.push({clave:m.ref.join('|'),tipo:m.t,nombre:NOMBRE[m.t],color:COL[m.t],hora:horaAR(m.h)||'—',texto:plain(m.txt),sub:plain(m.sub||''),autor:plain(m.t==='pago'&&m.o&&m.o.por&&m.o.por!=='auto'?'Cobró '+esc(uname(m.o.por)):porTxt(m.o)),monto:(m.t==='pago'?'+ ':'')+money(m.imp),pagado:!!m.pag,cobro:m.t==='pago',unico:m.cobroUnico?m.cobroUnico.id:'',ref:m.ref});}
+ const cuentaActual=cuenta(s.id),vista={filtro:f,grupos,cantidad:L.length,favor:favor(s.id)?money(favor(s.id)):'',saldo:cuentaActual.debe?'Debe '+money(cuentaActual.debe):cuentaActual.aFavor?'A favor '+money(cuentaActual.aFavor):'Al día',deuda:!!cuentaActual.debe,
+ puenteSeguro:seguroPuente(),filtrar:n=>{F.detF=n;rerender()},cobrar:ref=>openCobro(s.id,ref.join('|')),anularPago:ref=>anularPago(ref.join('|')),editar:ref=>editMovement(ref[0],ref[1],ref[2]??null),anular:ref=>anularMovimiento(ref[0],ref[1],ref[2]??null),editarCobro:editCobro,anularCobro};
+ window.dispatchEvent(new CustomEvent('agencia:socio-detalle',{detail:vista}));
+}
+function publicarSocioJugadas(){
+ if(V!=='socio'||!['q6','qui'].includes(STAB)||!soc(SID)){window.dispatchEvent(new CustomEvent('agencia:socio-jugadas',{detail:null}));return}
+ const s=soc(SID),quini=STAB==='q6',L=(quini?S.q6:S.quiniela).filter(x=>x.sid===s.id).sort((a,b)=>b.fecha.localeCompare(a.fecha));
+ const vista={quini,filas:L.map(x=>({id:x.id,fecha:fdl(x.fecha),numeros:x.numeros||'',especial:quini&&S.q6esp.some(e=>e.fecha===x.fecha),automatica:!!x.auto,monto:money(x.monto),pagado:!!x.pagado,abono:x.abono>0?money(x.abono):'',restante:money(Math.max(0,x.monto-(x.abono||0)))})),
+ plan:()=>openPlanQ6(s.id),agregar:()=>quini?openQ6(null,s.id):openQui(null,s.id),editar:id=>quini?openQ6(id):openQui(id),pago:id=>editPayment(quini?'q6':'quiniela',id),cobrar:id=>openCobro(s.id,(quini?'q6':'quiniela')+'|'+id)};
+ window.dispatchEvent(new CustomEvent('agencia:socio-jugadas',{detail:vista}));
+}
+
+function publicarSocioSeguros(){
+ if(V!=='socio'||STAB!=='seg'||!soc(SID)){window.dispatchEvent(new CustomEvent('agencia:socio-seguros',{detail:null}));return}
+ const s=soc(SID),seguros=S.seguros.filter(x=>x.sid===s.id).map(x=>{const imp=x.cuotas.filter(c=>!c.pago),ven=imp.filter(c=>c.venc<=hoy()),dias=days(x.venc);return{id:x.id,ingreso:fd(x.ingreso),vencimiento:dias<0?'Venció hace '+(-dias)+' d':dias===0?'Vence hoy':dias<=7?'Vence en '+dias+' d':'Vence '+fd(x.venc),descripcion:x.desc,autor:plain(porTxt(x)),plan:PLANES[x.plan],valor:money(x.valor),vencido:!!ven.length,pagado:!imp.length,etiquetaCobro:imp.length?(ven.length?'Cobrar '+money(sum(ven,c=>c.imp)):'Cobrar'):'',cuotas:x.cuotas.map(c=>({numero:x.cuotas.length>1?String(c.n):'$',pagada:!!c.pago,vencida:c.venc<=hoy(),titulo:(x.cuotas.length>1?'Cuota '+c.n:'Pago')+' · vence '+fd(c.venc)+' · '+money(c.imp)+(c.pago?' · pagada '+fd(c.pago)+(c.medio?' ('+plain(medioTxt(c.medio,c.det))+')':''):'')}))}});
+ const vista={seguros,agregar:()=>openSeguro(null,s.id),editar:openSeguro,cuota:cuotaSeg,cobrar:id=>{const x=S.seguros.find(e=>e.id===id);if(x){const i=x.cuotas.findIndex(c=>!c.pago);if(i>=0)openCobro(s.id,'seg|'+id+'|'+i)}}};
+ window.dispatchEvent(new CustomEvent('agencia:socio-seguros',{detail:vista}));
+}
+
+function publicarSocioRifas(){
+ if(V!=='socio'||STAB!=='rifa'||!soc(SID)){window.dispatchEvent(new CustomEvent('agencia:socio-rifas',{detail:null}));return}
+ const s=soc(SID),filas=S.rifas.filter(x=>x.sid===s.id).sort((a,b)=>b.anio-a.anio).map(r=>{const saldo=r.importe-rifaPagado(r),vencido=r.pagos.some((p,i)=>!p&&rifaVenc(r,i)<=hoy());return{id:r.id,numero:String(r.nro),anio:r.anio,modalidad:r.modo==='contado'?'Contado':r.ncuotas+' cuotas',importe:money(r.importe),saldo:saldo>0?money(saldo):'—',pagado:saldo<=0,vencido,primera:r.pagos.findIndex(p=>!p),contador:r.modo==='cuotas'?r.pagos.filter(Boolean).length+' de '+r.ncuotas+' pagas':'',cuotas:r.pagos.map((p,i)=>({etiqueta:r.modo==='contado'?'$':String(i+1),pagada:!!p,vencida:!p&&rifaVenc(r,i)<=hoy(),titulo:(r.modo==='contado'?'Pago':'Cuota '+(i+1))+' · '+money(cuotaRifa(r,i))+' · '+(p?'pagada '+fd(p):'vence '+fd(rifaVenc(r,i)))}))}});
+ const vista={filas,agregar:()=>openRifa(null,s.id),editar:openRifa,cuotaPago:openRifaPago,cobrar:(id,i)=>openCobro(s.id,'rifa|'+id+'|'+i)};
+ window.dispatchEvent(new CustomEvent('agencia:socio-rifas',{detail:vista}));
+}
+
+function publicarSocioLoteria(){
+ if(V!=='socio'||STAB!=='lot'||!soc(SID)){window.dispatchEvent(new CustomEvent('agencia:socio-loteria',{detail:null}));return}
+ const s=soc(SID),L=S.lot.filter(x=>x.sid===s.id).sort((a,b)=>((so(b.soId)||{}).fecha||'').localeCompare((so(a.soId)||{}).fecha||''));
+ const vista={socioId:s.id,puenteLoteria:loteriaPuente(),fijos:window.loteriaServidor?[]:s.fijos.map((f,i)=>({indice:i,numero:String(f.numero),detalle:f.frac?f.frac+(f.frac>1?' fracciones':' fracción'):'Entero'})),filas:window.loteriaServidor?[]:L.map(x=>({id:x.id,sorteo:(so(x.soId)||{}).nombre||'—',numero:String(x.numero),fracciones:fracTxt(x),importe:money(x.frac*x.precio),pagado:!!x.pagado,abono:x.abono>0?money(x.abono):'',restante:money(Math.max(0,x.frac*x.precio-(x.abono||0)))})),
+ agregarFijo:(numero,frac)=>{const n=numero.replace(/\s/g,'');if(!n){toast('Escribí el número');return} s.fijos.push({numero:n,frac});save();rerender();toast('Número fijo agregado')},quitarFijo:i=>{s.fijos.splice(i,1);save();rerender()},agregar:()=>openVenta(null,s.id),editar:openVenta,pago:id=>editPayment('lot',id),cobrar:id=>openCobro(s.id,'lot|'+id)};
+ window.dispatchEvent(new CustomEvent('agencia:socio-loteria',{detail:vista}));
+}
 
 function editMovement(k,id,i){if(k==='cobro')return editCobro(id);if(k==='seg')return openSeguro(id);if(k==='q6')return openQ6(id);if(k==='lot')return openVenta(id);if(k==='quiniela')return openQui(id);if(k==='rifa')return openRifa(id)}
 /* Si se anula un abono parcial de algo que después otro cobro terminó de pagar, ese algo deja de estar pago:
@@ -427,37 +401,13 @@ function saveCobroEdit(id,fecha,medio,detalle,monto){
   done('Cobro actualizado');
 }
 
-function sSeg(s){const L=S.seguros.filter(x=>x.sid===s.id);
-  return `<div class="card"><div class="ch"><h2>Seguros</h2><button class="btn p sm" onclick="openSeguro(null,'${s.id}')">+ Seguro</button></div>
-  ${L.length?`<div class="tw"><table><thead><tr><th>Ingreso</th><th>Vence</th><th>Descripción</th><th>Forma de pago</th><th class="r">Valor</th><th>Cuotas</th><th>Pago</th><th></th></tr></thead><tbody>${L.map(x=>segRow(x)).join('')}</tbody></table></div>`:'<div class="empty">No tiene seguros.</div>'}</div>`}
-function sQ6(s){const J=S.q6.filter(x=>x.sid===s.id).sort((a,b)=>b.fecha.localeCompare(a.fecha));
-  return `  <div class="card"><div class="ch"><h2>Jugadas</h2><div class="acts"><button class="btn sm" onclick="openPlanQ6('${s.id}')">Administrar días</button><button class="btn p sm" onclick="openQ6(null,'${s.id}')">+ Jugada</button></div></div>
-  ${J.length?`<div class="tw"><table><thead><tr><th>Sorteo</th><th class="r">Monto</th><th>Pago</th><th></th></tr></thead><tbody>${J.map(j=>`<tr class="${j.pagado?'r-ok':j.abono>0?'r-par':'r-bad'}"><td>${fdl(j.fecha)}${S.q6esp.some(e=>e.fecha===j.fecha)?' <span class="tag t-w">★ especial</span>':''}${j.auto?' <span class="tag">automática</span>':''}</td><td class="r">${money(j.monto)}</td><td>${pay(j.pagado,`tg('q6','${j.id}')`)}</td><td class="r"><button class="btn sm g" onclick="openQ6('${j.id}')">Editar</button></td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">Sin jugadas.</div>'}</div>`}
-function openPlanQ6(sid){const s=soc(sid);modal(`<h2>Días de juego habitual</h2><p class="note">Elegí los días para las próximas jugadas automáticas. Los sorteos ya cargados se conservan.</p><div class="opts">${S.conf.q6Dias.map(d=>`<label><input type="checkbox" name="plan-dia" value="${d}" ${s.q6.dias.includes(d)?'checked':''}>${DIAS[d]}</label>`).join('')}</div><label class="f">Jugadas por sorteo<input id="plan-cant" type="number" min="1" value="${s.q6.cant||1}"></label><p class="mu small">Para detener las jugadas automáticas, dejá todos los días sin marcar.</p><div class="mfoot"><span></span><div class="acts"><button class="btn" onclick="close_()">Cancelar</button><button class="btn p" onclick="savePlanQ6('${sid}')">Guardar</button></div></div>`)}
-function savePlanQ6(sid){const s=soc(sid);if(!s)return;const dias=[...document.querySelectorAll('[name=plan-dia]:checked')].map(e=>+e.value);q6Auto();const antes=s.q6.auto,cambiaron=[...s.q6.dias].sort().join(',')!==[...dias].sort().join(',');s.q6.dias=dias;s.q6.activo=dias.length>0;s.q6.auto=dias.length>0;s.q6.cant=Math.max(1,parseInt(val('plan-cant'))||1);if(s.q6.auto&&(!antes||cambiaron))s.q6.desde=hoy();save();q6Auto();close_();rerender();toast('Días de juego actualizados')}
+function openPlanQ6(sid){const s=soc(sid);if(!s)return;close_();window.dispatchEvent(new CustomEvent('agencia:plan-quini',{detail:{socioId:sid,puenteQuini:quiniPuente(),inicial:{dias:s.q6.dias.map(String),cantidad:String(s.q6.cant||1)},dias:S.conf.q6Dias.map(d=>({id:String(d),nombre:DIAS[d]})),guardar:datos=>savePlanQ6(sid,datos),cerrar:close_}}));}
+function savePlanQ6(sid,datos){const s=soc(sid);if(!s)return;const dias=datos.dias.map(Number);q6Auto();const antes=s.q6.auto,cambiaron=[...s.q6.dias].sort().join(',')!==[...dias].sort().join(',');s.q6.dias=dias;s.q6.activo=dias.length>0;s.q6.auto=dias.length>0;s.q6.cant=Math.max(1,parseInt(datos.cantidad,10)||1);if(s.q6.auto&&(!antes||cambiaron))s.q6.desde=hoy();save();q6Auto();close_();rerender();toast('Días de juego actualizados')}
+
 function setAuto(sid,on){const s=soc(sid);s.q6.auto=on;if(on){if(!s.q6.dias.length)s.q6.dias=[...S.conf.q6Dias];s.q6.desde=hoy()}s.q6.activo=s.q6.dias.length>0;save();const n=q6Auto();rerender();toast(on?'Renovación automática activada'+(n?` · ${n} jugada${n>1?'s':''} cargada${n>1?'s':''}`:''):'Renovación automática apagada')}
 function setDia(sid,d,on){const s=soc(sid);s.q6.dias=s.q6.dias.filter(x=>x!==d);if(on)s.q6.dias.push(d);s.q6.dias.sort();s.q6.activo=s.q6.dias.length>0;if(!s.q6.dias.length)s.q6.auto=false;else if(!s.q6.auto){s.q6.auto=true;s.q6.desde=hoy()}save();q6Auto();rerender()}
 function setCant(sid,v){soc(sid).q6.cant=Math.max(1,parseInt(v)||1);save();rerender()}
-function sLot(s){const L=S.lot.filter(x=>x.sid===s.id).sort((a,b)=>((so(b.soId)||{}).fecha||'').localeCompare((so(a.soId)||{}).fecha||''));
-  return `<div class="card"><div class="ch"><div><h2>Números fijos</h2><div class="mu small">Los que compra todos los años. En Lotería, “Cargar números fijos” los pasa al sorteo.</div></div></div>
-  <div class="list">${s.fijos.map((f,i)=>`<div><span><span class="mono">${esc(f.numero)}</span> · ${f.frac?f.frac+(f.frac>1?' fracciones':' fracción'):'Entero'}</span><button class="btn sm g d" onclick="delFijo('${s.id}',${i})">Quitar</button></div>`).join('')||'<div class="empty">No tiene números fijos.</div>'}</div>
-  <div class="acts" style="margin-top:10px;align-items:center"><input id="fj-n" class="in mono" placeholder="Número" inputmode="numeric" style="width:130px">
-  <select id="fj-f" class="in"><option value="0">Entero</option>${Array.from({length:19},(_,i)=>`<option value="${i+1}">${i+1} ${i?'fracciones':'fracción'}</option>`).join('')}</select><button class="btn sm" onclick="addFijo('${s.id}')">+ Agregar fijo</button></div></div>
-  <div class="card"><div class="ch"><h2>Números comprados</h2><button class="btn p sm" onclick="openVenta(null,'${s.id}')">+ Número</button></div>
-  ${L.length?`<div class="tw"><table><thead><tr><th>Sorteo</th><th>Número</th><th>Fracciones</th><th class="r">Pesos</th><th>Pago</th><th></th></tr></thead><tbody>${L.map(l=>`<tr class="ck ${l.pagado?'r-ok':'r-bad'}" onclick="openVenta('${l.id}')"><td>${esc((so(l.soId)||{}).nombre||'—')}</td><td class="mono">${esc(l.numero)}</td><td>${fracTxt(l)}</td><td class="r">${money(l.frac*l.precio)}</td><td>${pay(l.pagado,`tg('lot','${l.id}')`)}</td><td><button class="btn sm g" onclick="event.stopPropagation();openVenta('${l.id}')">Editar</button></td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">No compró números.</div>'}</div>`}
-function addFijo(sid){const n=val('fj-n').replace(/\s/g,'');if(!n)return toast('Escribí el número');soc(sid).fijos.push({numero:n,frac:+val('fj-f')});save();rerender();toast('Número fijo agregado')}
-function delFijo(sid,i){soc(sid).fijos.splice(i,1);save();rerender()}
-function sQui(s){const Q=S.quiniela.filter(x=>x.sid===s.id).sort((a,b)=>b.fecha.localeCompare(a.fecha));
-  return `<div class="card"><div class="ch"><h2>Quiniela</h2><button class="btn p sm" onclick="openQui(null,'${s.id}')">+ Jugada</button></div>
-  ${Q.length?`<div class="tw"><table><thead><tr><th>Fecha</th><th>Números</th><th class="r">Monto</th><th>Pago</th><th></th></tr></thead><tbody>${Q.map(q=>`<tr class="ck ${q.pagado?'r-ok':'r-bad'}" onclick="openQui('${q.id}')"><td>${fdl(q.fecha)}</td><td class="mono">${esc(q.numeros)}</td><td class="r">${money(q.monto)}</td><td>${pay(q.pagado,`tg('quiniela','${q.id}')`)}</td><td><button class="btn sm g" onclick="event.stopPropagation();openQui('${q.id}')">Editar</button></td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">Sin jugadas.</div>'}</div>`}
-function sRifa(s){const R=S.rifas.filter(x=>x.sid===s.id).sort((a,b)=>b.anio-a.anio);
-  return `<div class="card"><div class="ch"><h2>Rifa Devoto</h2><button class="btn p sm" onclick="openRifa(null,'${s.id}')">+ Rifa</button></div>
-  ${R.length?`<div class="tw"><table><thead><tr><th>Rifa</th><th>Modalidad</th><th class="r">Importe</th><th>Pagos</th><th class="r">Estado</th><th></th></tr></thead><tbody>${R.map(r=>rifaRow(r)).join('')}</tbody></table></div>`:'<div class="empty">No tiene rifas.</div>'}</div>`}
 /* ============ SEGUROS ============ */
-function segRow(x,showSoc){const imp=x.cuotas.filter(c=>!c.pago),ven=imp.filter(c=>c.venc<=hoy()),nx=x.cuotas.findIndex(c=>!c.pago);
-  const pg=!imp.length?'<span class="pay si">✓ Pagado</span>':cobrarBtn(x.sid,'seg|'+x.id+'|'+nx,ven.length?'Cobrar '+money(sum(ven,c=>c.imp)):'Cobrar');
-  return `<tr class="ck ${!imp.length?'r-ok':ven.length?'r-bad':''}" onclick="openSeguro('${x.id}')">${showSoc?`<td>${esc(sname(x.sid))}</td>`:''}<td>${fd(x.ingreso)}</td><td>${vtag(x.venc)}</td><td>${esc(x.desc)}${porTxt(x)?`<br><span class="by">${porTxt(x)}</span>`:''}</td><td>${PLANES[x.plan]}</td><td class="r">${money(x.valor)}</td>
-  <td><div class="cuotas">${x.cuotas.map((c,i)=>`<button class="${c.pago?'si':c.venc<=hoy()?'ven':''}" title="${x.cuotas.length>1?'Cuota '+c.n:'Pago'} · vence ${fd(c.venc)} · ${money(c.imp)}${c.pago?' · pagada '+fd(c.pago)+(c.medio?' ('+medioTxt(c.medio,c.det)+')':''):''}" onclick="event.stopPropagation();cuotaSeg('${x.id}',${i})">${x.cuotas.length>1?c.n:'$'}</button>`).join('')}</div></td><td>${pg}</td><td><button class="btn sm g" onclick="event.stopPropagation();openSeguro('${x.id}')">Editar</button></td></tr>`}
 function publicarSeguros(){
   const seguros=V==='seguros'&&CUR?[...S.seguros].sort((a,b)=>a.venc.localeCompare(b.venc)).map(seguro=>{
     const pendientes=seguro.cuotas.filter(c=>!c.pago);
@@ -484,12 +434,6 @@ const DETS={cheque:[['banco','Banco'],['nro','N° de cheque'],['librador','Libra
   echeq:[['banco','Banco'],['nro','N° / ID del e-cheq'],['librador','CUIT del librador'],['fcobro','Fecha de pago','date']],
   transferencia:[['banco','Banco o billetera de origen'],['nro','N° de operación / comprobante'],['librador','Titular de la cuenta']],
   mp:[['nro','N° de operación'],['librador','Titular']]};
-const DETNOM={cheque:'del cheque',echeq:'del e-cheq',transferencia:'de la transferencia',mp:'del pago'};
-const pagoCampos=(f,m,det)=>`<label class="f">Día que llegó el pago<input type="date" id="pg-f" value="${f}"></label><span class="lbl">Medio de pago</span><div class="opts">${Object.entries(MEDIOS).map(([k,t])=>`<label><input type="radio" name="pg-m" value="${k}" ${m===k?'checked':''} onchange="pgDet()">${t}</label>`).join('')}<label><input type="radio" name="pg-m" value="" ${!m?'checked':''} onchange="pgDet()">Sin especificar</label></div><div id="pg-dw" data-det="${esc(JSON.stringify(det||{}))}"></div>`;
-function pgDet(){const w=$('#pg-dw');if(!w)return;const m=radio('pg-m');const F_=DETS[m];if(!F_){w.innerHTML='';return}
-  let d={};try{d=JSON.parse(w.dataset.det||'{}')}catch(e){}const has=Object.keys(d).length>0||m==='cheque'||m==='echeq';
-  w.innerHTML=`<div class="opts" style="margin-top:-4px"><label><input type="checkbox" id="pg-dc" ${has?'checked':''} onchange="$('#pg-df').hidden=!this.checked">¿Cargar los datos ${DETNOM[m]}?</label></div>
-  <div id="pg-df" ${has?'':'hidden'} style="border:1px solid var(--ln);border-radius:10px;padding:12px 12px 0;margin-bottom:12px"><div class="row">${F_.map(([k,t,ty])=>`<label class="f">${t}<input id="pg-d-${k}" ${ty?`type="${ty}"`:''} value="${esc(d[k]||'')}"></label>`).join('')}</div></div>`;enh(w)}
 function detallePago(medio,cargar,datos,anterior){
   if(!cargar||!DETS[medio])return null;
   const detalle={};
@@ -501,14 +445,6 @@ function detallePago(medio,cargar,datos,anterior){
     if(anterior.dep)detalle.dep=anterior.dep;
   }
   return Object.keys(detalle).length?detalle:null;
-}
-function pagoDet(){
-  const medio=radio('pg-m');
-  if(!DETS[medio]||!$('#pg-dc')?.checked)return null;
-  let anterior={};
-  try{anterior=JSON.parse($('#pg-dw').dataset.det||'{}')}catch{}
-  const datos=Object.fromEntries(DETS[medio].map(([clave])=>[clave,val('pg-d-'+clave)]));
-  return detallePago(medio,true,datos,anterior);
 }
 function abrirPago({fecha,medio='',detalle,monto,guardar,...vista}){
   const anterior=detalle||{};
@@ -527,10 +463,9 @@ function abrirPago({fecha,medio='',detalle,monto,guardar,...vista}){
 }
 function medioTxt(m,d){if(!m)return'';let t=MEDIOS[m]||'';if(d){t+=[d.banco,d.nro?'N° '+d.nro:'',d.librador,d.fcobro?(m==='echeq'?'paga ':'cobro ')+fd(d.fcobro):''].filter(Boolean).map(x=>' · '+esc(x)).join('');if(d.dep)t+=' · depositado'}return t}
 function crearSocioParaSeguro(nombre,tel){
-  const normalizado=nombre.trim().toLowerCase();
-  let socio=S.socios.find(x=>x.nombre.trim().toLowerCase()===normalizado);
+  let socio=window.sociosHelpers.buscarSocioPorNombre(S.socios,nombre);
   if(!socio){
-    socio={id:uid(),nro:String(Math.max(0,...S.socios.map(x=>parseInt(x.nro)||0))+1),nombre,tel,dir:'',activo:true,dni:'',nota:'',fijos:[],q6:{activo:false,dias:[],cant:1}};
+    socio={id:uid(),nro:window.sociosHelpers.proximoNumeroSocio(S.socios),nombre,tel,dir:'',activo:true,dni:'',nota:'',fijos:[],q6:{activo:false,dias:[],cant:1}};
     S.socios.push(socio);
     save();
   }else if(!socio.activo){
@@ -552,8 +487,8 @@ function openSeguro(id,sid){
   window.dispatchEvent(new CustomEvent('agencia:editar-seguro',{detail:{
     id:id||null,
     inicial:{sid:x.sid,ingreso:x.ingreso,venc:x.venc,desc:x.desc||'',valor:fmtN(x.valor),plan:String(x.plan)},
-    socios,socioFijo,guardar:datos=>saveSeguro(id,datos),
-    eliminar:()=>{if(id)del('seguros',id)},crearSocio:crearSocioParaSeguro,cerrar:close_,
+    socios,socioFijo,puenteSeguro:seguroPuente(),guardar:datos=>saveSeguro(id,datos),
+    eliminar:()=>{if(id)del('seguros',id)},crearSocio:crearSocioParaSeguro,puenteSocio:socioPuente(true),cerrar:close_,
   }}));
 }
 function saveSeguro(id,datos){const o={sid:datos.sid,ingreso:datos.ingreso,venc:datos.venc,desc:datos.desc,valor:num(datos.valor),plan:datos.plan};
@@ -578,6 +513,7 @@ function cuotaSeg(id,i){
   if(!cuota)return;
   abrirPago({
     clave:'seg|'+id+'|'+i,
+    seguroOperacion:{id,indice:i,puente:seguroPuente()},
     titulo:seguro.cuotas.length>1?'Pago de la cuota '+cuota.n+' de '+seguro.cuotas.length:'Pago del seguro',
     descripcion:sname(seguro.sid)+' · '+seguro.desc,vencimiento:fd(cuota.venc),importe:money(cuota.imp),
     fecha:cuota.pago,medio:cuota.medio,detalle:cuota.det,
@@ -588,146 +524,117 @@ function cuotaSeg(id,i){
 }
 function setCuota(id,i,f,m,d){const c=S.seguros.find(s=>s.id===id).cuotas[i];if(!f&&c.pago){c.pago=null;const lib=liberarDeCobros(['seg',id,i],true);if(lib)setTimeout(()=>toast(`${money(lib)} quedaron como saldo a favor`),2500)}c.pago=f||null;c.medio=f?(m||''):'';c.det=f?d||null:null;done(f?'Pago registrado':'Cuota desmarcada')}
 /* ============ JUEGOS (Quini 6 · Lotería · Quiniela · Rifa) ============ */
-VIEWS.juegos=()=>({q6:vQ6,lot:vLot,qui:vQui,rifa:vRifa}[TAB])();
 /* ---- piezas comunes de los juegos ---- */
-const GDESC={q6:'Jugadas por sorteo. Los socios que juegan siempre se cargan solos el día del sorteo.',lot:'Números vendidos por sorteo y a quién falta ofrecerle.',qui:'Jugadas del día. Navegá los días con las flechas.',rifa:'Rifas vendidas por año, de contado o en cuotas.'};
-function gHead(k,btn){return `<div class="head"><div><h1 class="gt" style="--c:${COL[k]}">${NOMBRE[k]}</h1><div class="sub">${GDESC[k]}</div></div>${btn||''}</div>`}
-function gKpis(a,b,c){return `<div class="grid g3"><div class="kpi"><small>${a[0]}</small><b>${a[1]}</b>${a[2]?`<span class="mu small">${a[2]}</span>`:''}</div><div class="kpi"><small>Cobrado</small><b class="ok">${money(b)}</b></div><div class="kpi ${c?'kbad':''}"><small>Falta cobrar</small><b class="${c?'bad':''}">${money(c)}</b></div></div>`}
-function gFilt(){const f=F.gf||'todos';return `<div class="seg">${[['todos','Todos'],['deben','Deben'],['pagados','Pagados']].map(([k,t])=>`<button class="${f===k?'on':''}" onclick="F.gf='${k}';rerender()">${t}</button>`).join('')}</div>`}
 const gPass=paid=>{const f=F.gf||'todos';return f==='todos'||(f==='deben'&&!paid)||(f==='pagados'&&paid)};
-const sLink=sid=>`<button class="lnk" onclick="event.stopPropagation();verSocio('${sid}')">${esc(sname(sid))}</button>`;
 const byName=(a,b)=>sname(a.sid).localeCompare(sname(b.sid));
 const byNum=(a,b)=>{const x=parseInt(String(a.numero).replace(/\D/g,''),10),y=parseInt(String(b.numero).replace(/\D/g,''),10);return (isNaN(x)?Infinity:x)-(isNaN(y)?Infinity:y)||String(a.numero).localeCompare(String(b.numero))||byName(a,b)};
-const empt=(t,btn)=>`<div class="emptyb"><p>${t}</p>${btn||''}</div>`;
 
 /* ---- Quini 6 ---- */
-function vQ6(){const fechas=q6Fechas(addDays(hoy(),-180),addDays(hoy(),60));let f=F.q6F&&fechas.includes(F.q6F)?F.q6F:(q6Prox()||fechas[fechas.length-1]);F.q6F=f;
-  const ix=fechas.indexOf(f),prox=q6Prox(),esp=S.q6esp.find(e=>e.fecha===f),dd=days(f);
-  const J=S.q6.filter(j=>j.fecha===f).sort(byName),V=J.filter(j=>gPass(j.pagado));
-  const juegan=S.socios.filter(s=>s.activo&&s.q6.dias.length).sort((a,b)=>a.nombre.localeCompare(b.nombre));const eseDia=juegan.filter(s=>juegaEn(s,f));
-  return gHead('q6',`<button class="btn p" onclick="openQ6(null,null,'${f}')">+ Jugada suelta</button>`)+
-  `<div class="card selbar"><button class="btn" ${ix<=0?'disabled':''} onclick="F.q6F='${fechas[ix-1]||f}';rerender()" aria-label="Sorteo anterior">‹</button>
-    <div class="selbox"><b>Sorteo del ${DIAS[parse(f).getDay()]} ${fd(f)}</b><span>${dd===0?'Hoy':dd>0?`Falta${dd>1?'n':''} ${dd} día${dd>1?'s':''}`:`Fue hace ${-dd} día${dd<-1?'s':''}`} · ${money(q6Precio(f))} por jugada${esp?` · <span class="tag t-w">★ ${esc(esp.nombre)}</span>`:''}</span></div>
-    <button class="btn" ${ix>=fechas.length-1?'disabled':''} onclick="F.q6F='${fechas[ix+1]||f}';rerender()" aria-label="Sorteo siguiente">›</button>
-    ${prox&&f!==prox?`<button class="btn g" onclick="F.q6F='${prox}';rerender()">Ir al próximo</button>`:''}</div>`+
-  gKpis(['Jugadas',J.length,money(sum(J,j=>j.monto))+' en total'],sum(J,j=>cobr(j,j.monto)),sum(J,j=>falt(j,j.monto)))+
-  `<div class="card"><div class="ch"><h2>Jugadas de este sorteo</h2><div class="acts">${V.length?`<button class="btn sm" onclick="pdfQ6()">⬇ PDF</button>`:''}${J.length?gFilt():''}</div></div>
-  ${J.length?(V.length?`<div class="tw"><table><thead><tr><th>Socio</th><th>Cómo juega</th><th>Cargó</th><th class="r">Monto</th><th>Estado</th><th></th></tr></thead><tbody>${V.map(j=>`<tr class="${j.pagado?'r-ok':j.abono>0?'r-par':'r-bad'}"><td>${sLink(j.sid)}</td><td class="mu small">${j.auto?'Juega siempre':'Jugada suelta'}</td><td class="by">${porTxt(j)||'—'}</td><td class="r amt">${money(j.monto)}</td><td>${pay(j.pagado,`tg('q6','${j.id}')`)}</td><td class="r"><button class="btn sm g" onclick="openQ6('${j.id}')">Editar</button></td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">Nada en este filtro.</div>')
-   :dd>0?empt(eseDia.length?`Este sorteo todavía no se jugó. El día del sorteo se cargan solos: <b>${eseDia.map(s=>esc(s.nombre)).join(', ')}</b>.`:'Este sorteo todavía no se jugó y nadie juega fijo este día.',`<button class="btn" onclick="openQ6(null,null,'${f}')">+ Jugada suelta</button>`)
-   :empt('No hubo jugadas en este sorteo.')}</div>
-  <div class="two"><div class="card"><div class="ch"><div><h2>Juegan siempre</h2><div class="mu small">Se cambia desde la ficha de cada socio.</div></div></div>
-    <div class="list">${juegan.map(s=>`<div><span>${sLink(s.id)}<br><span class="mu small">${s.q6.dias.map(d=>DIAS[d]).join(' y ')} · ${s.q6.cant} jugada${s.q6.cant>1?'s':''}</span></span><b>${money(S.conf.q6Precio*s.q6.cant*s.q6.dias.length)}<span class="mu small"> /sem</span></b></div>`).join('')||'<div class="empty">Nadie juega fijo todavía. Entrá a un socio → pestaña Quini 6 y marcá los días.</div>'}</div></div>
-  <div class="card"><div class="ch"><div><h2>Sorteos especiales</h2><div class="mu small">Fechas con otro precio. Los comunes salen ${money(S.conf.q6Precio)}.</div></div><button class="btn sm" onclick="openEsp()">+ Especial</button></div>
-    <div class="list">${[...S.q6esp].sort((a,b)=>a.fecha.localeCompare(b.fecha)).map(e=>`<div><span>${esc(e.nombre)}<br><span class="mu small">${fdl(e.fecha)}</span></span><span class="acts" style="align-items:center"><b>${money(e.precio)}</b><button class="btn sm g" onclick="openEsp('${e.id}')">Editar</button></span></div>`).join('')||'<div class="empty">No hay especiales cargados.</div>'}</div></div></div>`}
-
+function publicarQuini(){
+ if(V!=='juegos'||TAB!=='q6'){window.dispatchEvent(new CustomEvent('agencia:quini',{detail:null}));return}
+ const fechas=q6Fechas(addDays(hoy(),-180),addDays(hoy(),60));let f=F.q6F&&fechas.includes(F.q6F)?F.q6F:(q6Prox()||fechas[fechas.length-1]);F.q6F=f;
+ const ix=fechas.indexOf(f),prox=q6Prox(),esp=S.q6esp.find(e=>e.fecha===f),dd=days(f);
+ const J=S.q6.filter(j=>j.fecha===f).sort(byName),visibles=J.filter(j=>gPass(j.pagado));
+ const juegan=S.socios.filter(s=>s.activo&&s.q6.dias.length).sort((a,b)=>a.nombre.localeCompare(b.nombre)),eseDia=juegan.filter(s=>juegaEn(s,f));
+ const autor=x=>{const a=x.por&&x.por!=='auto'?'Cargó '+uname(x.por):x.por==='auto'?'Automático':'';const m=x.modPor&&x.modPor!==x.por?'editó '+uname(x.modPor)+(x.modTs?' '+fd(x.modTs.slice(0,10)):''):'';return[a,m].filter(Boolean).join(' · ')||'—'};
+ const vista={fecha:'Sorteo del '+DIAS[parse(f).getDay()]+' '+fd(f),distancia:dd===0?'Hoy':dd>0?'Falta'+(dd>1?'n':'')+' '+dd+' día'+(dd>1?'s':''):'Fue hace '+(-dd)+' día'+(dd<-1?'s':''),precio:money(q6Precio(f)),especial:esp?esp.nombre:'',anterior:ix<=0,siguiente:ix>=fechas.length-1,proximo:!!prox&&f!==prox,cantidad:J.length,total:money(sum(J,j=>j.monto)),cobrado:money(sum(J,j=>cobr(j,j.monto))),falta:money(sum(J,j=>falt(j,j.monto))),deuda:sum(J,j=>falt(j,j.monto))>0,filtro:F.gf||'todos',futuro:dd>0,
+ filas:visibles.map(j=>({id:j.id,sid:j.sid,socio:sname(j.sid),tipo:j.auto?'Juega siempre':'Jugada suelta',autor:autor(j),monto:money(j.monto),pagado:!!j.pagado,abono:j.abono>0?money(j.abono):'',restante:money(Math.max(0,j.monto-(j.abono||0)))})),
+ eseDia:eseDia.map(s=>s.nombre),fijos:juegan.map(s=>({id:s.id,nombre:s.nombre,detalle:s.q6.dias.map(d=>DIAS[d]).join(' y ')+' · '+s.q6.cant+' jugada'+(s.q6.cant>1?'s':''),semanal:money(S.conf.q6Precio*s.q6.cant*s.q6.dias.length)})),precioComun:money(S.conf.q6Precio),especiales:[...S.q6esp].sort((a,b)=>a.fecha.localeCompare(b.fecha)).map(e=>({id:e.id,nombre:e.nombre,fecha:fdl(e.fecha),precio:money(e.precio)})),
+ cambiarFecha:n=>{F.q6F=fechas[ix+n]||f;rerender()},irProximo:()=>{F.q6F=prox;rerender()},filtrar:n=>{F.gf=n;rerender()},cargar:()=>openQ6(null,null,f),editar:id=>openQ6(id),verSocio,pdf:pdfQ6,cobrar:(sid,id)=>openCobro(sid,'q6|'+id),editarPago:id=>editPayment('q6',id),editarEspecial:id=>openEsp(id)};
+ window.dispatchEvent(new CustomEvent('agencia:quini',{detail:vista}));
+}
 /* ---- Lotería ---- */
-function vLot(){const L=[...S.sorteos].sort((a,b)=>a.fecha.localeCompare(b.fecha));const s=so(F.so)||sorteoAct();
-  if(!s)return gHead('lot')+empt('No hay sorteos cargados.',`<button class="btn p" onclick="nav('ajustes')">Cargar sorteos en Ajustes</button>`);F.so=s.id;
-  const Vt=S.lot.filter(l=>l.soId===s.id).sort(byNum),V=Vt.filter(v=>gPass(v.pagado));const imp=v=>v.frac*v.precio;
-  const con=new Set(Vt.map(v=>v.sid)),noq=new Set(S.ofertas.filter(o=>o.soId===s.id).map(o=>o.sid));
-  const sinOf=socOrd().filter(x=>!con.has(x.id)&&!noq.has(x.id)),noQ=socOrd().filter(x=>!con.has(x.id)&&noq.has(x.id));
-  const fijosPend=socOrd().filter(x=>x.fijos.some(f=>!Vt.some(v=>v.sid===x.id&&v.numero===f.numero)));const dd=days(s.fecha);
-  return gHead('lot',`<button class="btn p" onclick="openVenta(null,null,'${s.id}')">+ Vender número</button>`)+
-  `<div class="card"><span class="lbl">Elegí el sorteo</span><div class="seg" style="margin-top:6px;display:flex">${L.map(x=>`<button class="${x.id===s.id?'on':''}" onclick="F.so='${x.id}';rerender()">${esc(x.nombre)}${x.id===(sorteoAct()||{}).id?' · próximo':''}</button>`).join('')}</div>
-    <p style="margin-top:10px" class="small">Sorteo el <b>${fdl(s.fecha)}</b> (${dd>0?`faltan ${dd} días`:dd===0?'hoy':'ya se sorteó'}) · entero de <b>${s.frac}</b> fracciones · <b>${money(s.precio)}</b> la fracción · <b>${money(s.precio*s.frac)}</b> el entero</p></div>`+
-  gKpis(['Vendido',`${Vt.length} número${Vt.length===1?'':'s'}`,`${sum(Vt,v=>v.frac)} fracciones`],sum(Vt,v=>cobr(v,imp(v))),sum(Vt,v=>falt(v,imp(v))))+
-  `<div class="card"><div class="ch"><h2>Números vendidos</h2><div class="acts">${fijosPend.length?`<button class="btn sm" onclick="cargarFijos('${s.id}')">Cargar números fijos (${fijosPend.length})</button>`:''}${V.length?`<button class="btn sm" onclick="pdfLot()">⬇ PDF</button>`:''}${Vt.length?gFilt():''}</div></div>
-    ${Vt.length?(V.length?`<div class="tw"><table><thead><tr><th>Socio</th><th>Número</th><th>Fracciones</th><th>Cargó</th><th class="r">Importe</th><th>Estado</th><th></th></tr></thead><tbody>${V.map(v=>`<tr class="${v.pagado?'r-ok':v.abono>0?'r-par':'r-bad'}"><td>${sLink(v.sid)}</td><td class="mono">${esc(v.numero)}</td><td>${fracTxt(v)}</td><td class="by">${porTxt(v)||'—'}</td><td class="r amt">${money(imp(v))}</td><td>${pay(v.pagado,`tg('lot','${v.id}')`)}</td><td class="r"><button class="btn sm g" onclick="openVenta('${v.id}')">Editar</button></td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">Nada en este filtro.</div>')
-      :empt('Todavía no vendiste números para este sorteo.'+(fijosPend.length?' Podés empezar cargando los números fijos de tus socios.':''))}</div>
-  <div class="two"><div class="card"><div class="ch"><div><h2>Falta ofrecerle</h2><div class="mu small">Socios sin número en este sorteo.</div></div><span class="tag">${sinOf.length}</span></div>
-    <div class="list">${sinOf.map(x=>`<div><span>${sLink(x.id)}</span><span class="acts"><button class="btn sm g" onclick="noQuiso('${s.id}','${x.id}')">No quiso</button><button class="btn sm" onclick="openVenta(null,'${x.id}','${s.id}')">Vender</button></span></div>`).join('')||'<div class="empty">Ya le ofreciste a todos. 👍</div>'}</div></div>
-  <div class="card"><div class="ch"><div><h2>No quisieron</h2><div class="mu small">Le ofreciste y no compró.</div></div><span class="tag">${noQ.length}</span></div>
-    <div class="list">${noQ.map(x=>`<div><span>${sLink(x.id)}</span><span class="acts"><button class="btn sm g" onclick="noQuiso('${s.id}','${x.id}',true)">Deshacer</button><button class="btn sm" onclick="openVenta(null,'${x.id}','${s.id}')">Vender</button></span></div>`).join('')||'<div class="empty">Nadie por ahora.</div>'}</div></div></div>`}
-
+function publicarLoteria(){
+ if(V!=='juegos'||TAB!=='lot'){window.dispatchEvent(new CustomEvent('agencia:loteria',{detail:null}));return}
+ const L=[...S.sorteos].sort((a,b)=>a.fecha.localeCompare(b.fecha)),s=so(F.so)||sorteoAct();
+ if(!s){window.dispatchEvent(new CustomEvent('agencia:loteria',{detail:{sinSorteos:true,ajustes:()=>nav('ajustes')}}));return}F.so=s.id;
+ if(window.loteriaServidor){
+  const vista={pdfServidor:pdfLotServidor,puenteLoteria:loteriaPuente(),sinSorteos:false,sorteos:L.map(x=>({id:x.id,nombre:x.nombre,proximo:x.id===(sorteoAct()||{}).id})),seleccionado:s.id,fecha:fdl(s.fecha),distancia:'',fracciones:s.frac,precio:'',entero:'',cantidad:0,fraccionesVendidas:0,cobrado:'',falta:'',deuda:false,filtro:F.gf||'todos',fijosPend:0,filas:[],sinOf:[],noQ:[],
+   sorteo:id=>{F.so=id;rerender()},filtrar:id=>{F.gf=id;rerender()},vender:id=>openVenta(null,id||null,s.id),editar:id=>openVenta(id),fijos:()=>cargarFijos(s.id),pdf:pdfLot,verSocio,cobrar:(sid,id)=>openCobro(sid,'lot|'+id),editarPago:id=>editPayment('lot',id),noQuiso:(id,deshacer)=>noQuiso(s.id,id,deshacer)};
+  window.dispatchEvent(new CustomEvent('agencia:loteria',{detail:vista}));return;
+ }
+ const Vt=S.lot.filter(l=>l.soId===s.id).sort(byNum),filas=Vt.filter(v=>gPass(v.pagado)),imp=v=>v.frac*v.precio;
+ const con=new Set(Vt.map(v=>v.sid)),noq=new Set(S.ofertas.filter(o=>o.soId===s.id).map(o=>o.sid));
+ const sinOf=socOrd().filter(x=>!con.has(x.id)&&!noq.has(x.id)),noQ=socOrd().filter(x=>!con.has(x.id)&&noq.has(x.id));
+ const fijosPend=socOrd().filter(x=>x.fijos.some(f=>!Vt.some(v=>v.sid===x.id&&v.numero===f.numero))),dd=days(s.fecha);
+ const autor=x=>{const a=x.por&&x.por!=='auto'?'Cargó '+uname(x.por):x.por==='auto'?'Automático':'';const m=x.modPor&&x.modPor!==x.por?'editó '+uname(x.modPor)+(x.modTs?' '+fd(x.modTs.slice(0,10)):''):'';return[a,m].filter(Boolean).join(' · ')||'—'};
+ const vista={puenteLoteria:loteriaPuente(),sinSorteos:false,sorteos:L.map(x=>({id:x.id,nombre:x.nombre,proximo:x.id===(sorteoAct()||{}).id})),seleccionado:s.id,fecha:fdl(s.fecha),distancia:dd>0?'faltan '+dd+' días':dd===0?'hoy':'ya se sorteó',fracciones:s.frac,precio:money(s.precio),entero:money(s.precio*s.frac),cantidad:Vt.length,fraccionesVendidas:sum(Vt,v=>v.frac),cobrado:money(sum(Vt,v=>cobr(v,imp(v)))),falta:money(sum(Vt,v=>falt(v,imp(v)))),deuda:sum(Vt,v=>falt(v,imp(v)))>0,filtro:F.gf||'todos',fijosPend:fijosPend.length,
+ filas:filas.map(v=>({id:v.id,sid:v.sid,socio:sname(v.sid),numero:String(v.numero),fracciones:plain(fracTxt(v)),autor:autor(v),importe:money(imp(v)),pagado:!!v.pagado,abono:v.abono>0?money(v.abono):'',restante:money(Math.max(0,imp(v)-(v.abono||0)))})),sinOf:sinOf.map(x=>({id:x.id,nombre:x.nombre})),noQ:noQ.map(x=>({id:x.id,nombre:x.nombre})),
+ sorteo:id=>{F.so=id;rerender()},filtrar:id=>{F.gf=id;rerender()},vender:id=>openVenta(null,id||null,s.id),editar:id=>openVenta(id),fijos:()=>cargarFijos(s.id),pdf:pdfLot,verSocio,cobrar:(sid,id)=>openCobro(sid,'lot|'+id),editarPago:id=>editPayment('lot',id),noQuiso:(id,deshacer)=>noQuiso(s.id,id,deshacer)};
+ window.dispatchEvent(new CustomEvent('agencia:loteria',{detail:vista}));
+}
 /* ---- Quiniela ---- */
-function vQui(){const f=F.quiF,dd=days(f);const Qt=S.quiniela.filter(q=>q.fecha===f).sort(byName),Q=Qt.filter(q=>gPass(q.pagado));
-  const otros=S.quiniela.filter(q=>!q.pagado&&q.fecha!==f).sort((a,b)=>b.fecha.localeCompare(a.fecha));
-  return gHead('qui',`<button class="btn p" onclick="openQui(null,null)">+ Cargar jugadas</button>`)+
-  `<div class="card selbar"><button class="btn" onclick="F.quiF=addDays(F.quiF,-1);rerender()" aria-label="Día anterior">‹</button>
-    <div class="selbox"><b>${f===hoy()?'Hoy · ':dd===-1?'Ayer · ':''}${DIAS[parse(f).getDay()]} ${fd(f)}</b><span><input type="date" data-label="Elegir otra fecha" value="${f}" onchange="F.quiF=this.value;rerender()"></span></div>
-    <button class="btn" onclick="F.quiF=addDays(F.quiF,1);rerender()" aria-label="Día siguiente">›</button>${f!==hoy()?`<button class="btn g" onclick="F.quiF=hoy();rerender()">Volver a hoy</button>`:''}</div>`+
-  gKpis(['Jugado en el día',money(sum(Qt,q=>q.monto)),`${Qt.length} jugada${Qt.length===1?'':'s'}`],sum(Qt,q=>cobr(q,q.monto)),sum(Qt,q=>falt(q,q.monto)))+
-  `<div class="card"><div class="ch"><h2>Jugadas del día</h2>${Qt.length?gFilt():''}</div>
-    ${Qt.length?(Q.length?`<div class="tw"><table><thead><tr><th>Hora</th><th>Socio</th><th>Números</th><th>Cargó</th><th class="r">Monto</th><th>Estado</th><th></th></tr></thead><tbody>${Q.map(q=>`<tr class="${q.pagado?'r-ok':q.abono>0?'r-par':'r-bad'}"><td class="mu">${horaAR(q.ts)||'—'}</td><td>${sLink(q.sid)}</td><td class="mono">${esc(q.numeros)}</td><td class="by">${porTxt(q)||'—'}</td><td class="r amt">${money(q.monto)}</td><td>${pay(q.pagado,`tg('quiniela','${q.id}')`)}</td><td class="r"><button class="btn sm g" onclick="openQui('${q.id}')">Editar</button></td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">Nada en este filtro.</div>')
-      :empt(`No hay jugadas el ${DIAS[parse(f).getDay()]} ${fd(f)}.`,`<button class="btn" onclick="openQui(null,null)">+ Cargar jugadas</button>`)}</div>
-  ${otros.length?`<div class="card"><div class="ch"><div><h2>Deben de otros días</h2><div class="mu small">Quinielas sin cobrar de días anteriores.</div></div><b class="bad">${money(sum(otros,q=>falt(q,q.monto)))}</b></div>
-    <div class="tw"><table><tbody>${otros.map(q=>`<tr class="r-bad"><td style="width:110px">${fd(q.fecha)}</td><td>${sLink(q.sid)}</td><td class="mono">${esc(q.numeros)}</td><td class="r amt">${money(q.monto)}</td><td style="width:110px">${pay(false,`tg('quiniela','${q.id}')`)}</td><td><button class="btn sm g" onclick="openQui('${q.id}')">Editar</button></td></tr>`).join('')}</tbody></table></div></div>`:''}`}
-
+function publicarQuiniela(){
+ if(V!=='juegos'||TAB!=='qui'){window.dispatchEvent(new CustomEvent('agencia:quiniela',{detail:null}));return}
+ const f=F.quiF,dd=days(f),Qt=S.quiniela.filter(q=>q.fecha===f).sort(byName),filas=Qt.filter(q=>gPass(q.pagado));
+ const otros=S.quiniela.filter(q=>!q.pagado&&q.fecha!==f).sort((a,b)=>b.fecha.localeCompare(a.fecha));
+ const autor=x=>{const a=x.por&&x.por!=='auto'?'Cargó '+uname(x.por):x.por==='auto'?'Automático':'';const m=x.modPor&&x.modPor!==x.por?'editó '+uname(x.modPor)+(x.modTs?' '+fd(x.modTs.slice(0,10)):''):'';return[a,m].filter(Boolean).join(' · ')||'—'};
+ const fila=q=>({id:q.id,sid:q.sid,socio:sname(q.sid),fecha:fd(q.fecha),hora:horaAR(q.ts)||'—',numeros:q.numeros,autor:autor(q),monto:money(q.monto),pagado:!!q.pagado,abono:q.abono>0?money(q.abono):'',restante:money(Math.max(0,q.monto-(q.abono||0)))});
+ const vista={fecha:f,titulo:(f===hoy()?'Hoy · ':dd===-1?'Ayer · ':'')+DIAS[parse(f).getDay()]+' '+fd(f),hoy:f===hoy(),cantidad:Qt.length,total:money(sum(Qt,q=>q.monto)),cobrado:money(sum(Qt,q=>cobr(q,q.monto))),falta:money(sum(Qt,q=>falt(q,q.monto))),deuda:sum(Qt,q=>falt(q,q.monto))>0,filtro:F.gf||'todos',filas:filas.map(fila),otros:otros.map(fila),otrosTotal:money(sum(otros,q=>falt(q,q.monto))),
+ fechaCambiar:d=>{F.quiF=d;rerender()},ir:n=>{F.quiF=addDays(F.quiF,n);rerender()},irHoy:()=>{F.quiF=hoy();rerender()},filtrar:n=>{F.gf=n;rerender()},cargar:()=>openQui(null,null),editar:id=>openQui(id),verSocio,cobrar:(sid,id)=>openCobro(sid,'quiniela|'+id),editarPago:id=>editPayment('quiniela',id)};
+ window.dispatchEvent(new CustomEvent('agencia:quiniela',{detail:vista}));
+}
 /* ---- Rifa Devoto ---- */
-function rifaRow(r,showSoc){const pg=rifaPagado(r),sal=r.importe-pg,np=r.pagos.filter(Boolean).length,ven=r.pagos.some((p,i)=>!p&&rifaVenc(r,i)<=hoy());
-  return `<tr class="${sal<=0?'r-ok':ven?'r-bad':''}">${showSoc?`<td>${sLink(r.sid)}${porTxt(r)?`<br><span class="by">${porTxt(r)}</span>`:''}</td>`:''}<td style="white-space:nowrap">N° <span class="mono">${esc(r.nro)}</span>${showSoc?'':` <span class="mu small">${r.anio}</span>`}</td><td><span class="tag">${r.modo==='contado'?'Contado':r.ncuotas+' cuotas'}</span></td><td class="r">${money(r.importe)}</td>
-  <td><div class="cuotas">${r.pagos.map((p,i)=>`<button class="${p?'si':rifaVenc(r,i)<=hoy()?'ven':''}" title="${r.modo==='contado'?'Pago':'Cuota '+(i+1)} · ${money(cuotaRifa(r,i))} · ${p?'pagada '+fd(p):'vence '+fd(rifaVenc(r,i))}" onclick="openRifaPago('${r.id}',${i})">${r.modo==='contado'?'$':i+1}</button>`).join('')}</div>${r.modo==='cuotas'?`<span class="mu small">${np} de ${r.ncuotas} pagas</span>`:''}</td>
-  <td class="r amt">${sal>0?money(sal):'—'}</td><td>${sal>0?cobrarBtn(r.sid,'rifa|'+r.id+'|'+r.pagos.findIndex(p=>!p)):'<span class="pay si">✓ Pagada</span>'}</td><td class="r"><button class="btn sm g" onclick="openRifa('${r.id}')">Editar</button></td></tr>`}
-function vRifa(){const anios=[...new Set(S.rifas.map(r=>r.anio).concat(new Date().getFullYear()))].sort();const Rt=S.rifas.filter(r=>r.anio===F.rifaA).sort((a,b)=>byName(a,b)||String(a.nro).localeCompare(String(b.nro)));
-  const R=Rt.filter(r=>gPass(rifaPagado(r)>=r.importe));
-  return gHead('rifa',`<div class="acts"><button class="btn" onclick="pdfRifa()">⬇ PDF</button><button class="btn p" onclick="openRifa()">+ Vender rifa</button></div>`)+
-  `<div class="card selbar"><span class="lbl">Año</span><div class="seg">${anios.map(a=>`<button class="${a===F.rifaA?'on':''}" onclick="F.rifaA=${a};rerender()">${a}</button>`).join('')}</div><span class="mu small">Precio ${money(S.conf.rifaImporte)} · contado o ${S.conf.rifaCuotas} cuotas de ${money(cuotaRifa({importe:S.conf.rifaImporte,ncuotas:S.conf.rifaCuotas},0))}</span></div>`+
-  gKpis(['Rifas vendidas',Rt.length,money(sum(Rt,r=>r.importe))+' en total'],sum(Rt,rifaPagado),sum(Rt,r=>r.importe-rifaPagado(r)))+
-  `<div class="card"><div class="ch"><h2>Rifas ${F.rifaA}</h2>${Rt.length?gFilt():''}</div>
-    ${Rt.length?(R.length?`<div class="tw"><table><thead><tr><th>Socio</th><th>Rifa</th><th>Modalidad</th><th class="r">Importe</th><th>Cuotas</th><th class="r">Saldo</th><th>Estado</th><th></th></tr></thead><tbody>${R.map(r=>rifaRow(r,true)).join('')}</tbody></table></div>`:'<div class="empty">Nada en este filtro.</div>')
-      :empt(`Todavía no vendiste rifas en ${F.rifaA}.`,`<button class="btn" onclick="openRifa()">+ Vender rifa</button>`)}</div>`}
+function publicarRifa(){
+ if(V!=='juegos'||TAB!=='rifa'){window.dispatchEvent(new CustomEvent('agencia:rifa',{detail:null}));return}
+ const anios=[...new Set(S.rifas.map(r=>r.anio).concat(new Date().getFullYear()))].sort(),Rt=S.rifas.filter(r=>r.anio===F.rifaA).sort((a,b)=>byName(a,b)||String(a.nro).localeCompare(String(b.nro))),filas=Rt.filter(r=>gPass(rifaPagado(r)>=r.importe));
+ const autor=x=>{const a=x.por&&x.por!=='auto'?'Cargó '+uname(x.por):x.por==='auto'?'Automático':'';const m=x.modPor&&x.modPor!==x.por?'editó '+uname(x.modPor)+(x.modTs?' '+fd(x.modTs.slice(0,10)):''):'';return[a,m].filter(Boolean).join(' · ')};
+ const vista={anios,anio:F.rifaA,precio:money(S.conf.rifaImporte),ncuotas:S.conf.rifaCuotas,cuota:money(cuotaRifa({importe:S.conf.rifaImporte,ncuotas:S.conf.rifaCuotas},0)),cantidad:Rt.length,total:money(sum(Rt,r=>r.importe)),cobrado:money(sum(Rt,rifaPagado)),falta:money(sum(Rt,r=>r.importe-rifaPagado(r))),deuda:sum(Rt,r=>r.importe-rifaPagado(r))>0,filtro:F.gf||'todos',
+ filas:filas.map(r=>{const saldo=r.importe-rifaPagado(r),vencido=r.pagos.some((p,i)=>!p&&rifaVenc(r,i)<=hoy());return{id:r.id,sid:r.sid,socio:sname(r.sid),autor:autor(r),numero:String(r.nro),modalidad:r.modo==='contado'?'Contado':r.ncuotas+' cuotas',importe:money(r.importe),saldo:saldo>0?money(saldo):'—',pagado:saldo<=0,vencido,primera:r.pagos.findIndex(p=>!p),contador:r.modo==='cuotas'?r.pagos.filter(Boolean).length+' de '+r.ncuotas+' pagas':'',cuotas:r.pagos.map((p,i)=>({etiqueta:r.modo==='contado'?'$':String(i+1),pagada:!!p,vencida:!p&&rifaVenc(r,i)<=hoy(),titulo:(r.modo==='contado'?'Pago':'Cuota '+(i+1))+' · '+money(cuotaRifa(r,i))+' · '+(p?'pagada '+fd(p):'vence '+fd(rifaVenc(r,i)))}))}}),
+ cambiarAnio:n=>{F.rifaA=n;rerender()},filtrar:n=>{F.gf=n;rerender()},vender:()=>openRifa(),editar:id=>openRifa(id),pdf:pdfRifa,verSocio,cuotaPago:(id,i)=>openRifaPago(id,i),cobrar:(sid,id,i)=>openCobro(sid,'rifa|'+id+'|'+i)};
+ window.dispatchEvent(new CustomEvent('agencia:rifa',{detail:vista}));
+}
 function q6Cargar(f){S.socios.filter(s=>juegaEn(s,f)&&!S.q6.some(j=>j.fecha===f&&j.sid===s.id)).forEach(s=>S.q6.push({id:uid(),sid:s.id,fecha:f,monto:q6Precio(f)*(s.q6.cant||1),pagado:false}));save();toast('Jugadas cargadas')}
-function openQ6(id,sid,f){const j=id?S.q6.find(x=>x.id===id):{sid:sid||'',fecha:f||q6Prox(),pagado:false};
-  const fs=[...new Set(q6Fechas(addDays(hoy(),-14),addDays(hoy(),45)).concat(j.fecha?[j.fecha]:[]))].sort();
-  const cant=id?Math.max(1,Math.round(j.monto/q6Precio(j.fecha))):((soc(j.sid)||{q6:{}}).q6.cant||1);
-  modal(`<h2>${id?'Editar jugada':'Jugada de Quini 6'}</h2>${socSel('j-sid',j.sid)}
-  <div class="row"><label class="f">Sorteo<select id="j-f" onchange="q6Tot()">${fs.map(x=>`<option value="${x}" ${x===j.fecha?'selected':''}>${fdl(x)}${S.q6esp.some(e=>e.fecha===x)?' ★ especial':''}${x===hoy()?' (hoy)':''}</option>`).join('')}</select></label>
-  <label class="f">Cantidad de jugadas<input id="j-c" type="number" min="1" value="${cant}" oninput="q6Tot()"></label></div>
-  <p class="note" id="j-tot"></p>
-  <input type="checkbox" id="j-p" hidden ${j.pagado?'checked':''}>${id?'':`<div class="opts"><label><input type="checkbox" id="j-a" checked onchange="$('#j-dias').hidden=!this.checked">Juega todas las semanas</label></div><div id="j-dias"><span class="lbl">Días que juega</span><div class="opts">${S.conf.q6Dias.map(d=>`<label><input type="checkbox" name="j-dia" value="${d}" ${j.fecha&&parse(j.fecha).getDay()===d?'checked':''}>${DIAS[d]}</label>`).join('')}</div><p class="note">Marcá los días de juego habitual. El sorteo elegido arriba se carga ahora; las próximas jugadas se generan automáticamente desde esa fecha.</p></div>`}
-  <div class="mfoot">${id?`<button class="btn d" onclick="del('q6','${id}')">Eliminar</button>`:'<span></span>'}<div class="acts"><button class="btn" onclick="close_()">Cancelar</button><button class="btn p" onclick="saveQ6('${id||''}')">Guardar</button></div></div>`);q6Tot()}
-function q6Tot(){const c=Math.max(1,parseInt(val('j-c'))||1),p=q6Precio(val('j-f'));$('#j-tot').innerHTML=`${c} × ${money(p)} = <b style="color:var(--ink)">${money(c*p)}</b>`}
-function saveQ6(id){const fecha=val('j-f');const o={sid:val('j-sid'),fecha,monto:q6Precio(fecha)*Math.max(1,parseInt(val('j-c'))||1),pagado:$('#j-p').checked};if(!o.sid||!o.fecha)return toast('Elegí el socio y el sorteo');
-  if(!id&&$('#j-a').checked&&!document.querySelector('[name=j-dia]:checked'))return toast('Elegí al menos un día para jugar todas las semanas');
-  if(!id&&S.q6.some(x=>x.sid===o.sid&&x.fecha===o.fecha))return toast('Ya tiene una jugada en ese sorteo; editala');
-  let lib=0;if(id){lib=prepEditar('q6',id,o.monto,o.sid);if(S.q6.find(x=>x.id===id)._lib){o.pagado=false;delete S.q6.find(x=>x.id===id)._lib}Object.assign(S.q6.find(x=>x.id===id),o)}else S.q6.push({id:uid(),...o});if(lib)setTimeout(()=>toast(`Lo que ya había pagado (${money(lib)}) quedó como saldo a favor`),2500);
-  if(!id&&$('#j-a').checked){const s=soc(o.sid),dias=[...document.querySelectorAll('[name=j-dia]:checked')].map(e=>+e.value);s.q6.dias=[...new Set([...s.q6.dias,...dias])].sort();if(dias.length){if(!s.q6.auto){s.q6.auto=true;s.q6.desde=o.fecha}s.q6.activo=true;s.q6.cant=Math.max(1,parseInt(val('j-c'))||1)}}
-  done('Jugada guardada')}
-function openEsp(id){const e=id?S.q6esp.find(x=>x.id===id):{fecha:'',nombre:'Sorteo especial',precio:''};
-  modal(`<h2>Sorteo especial de Quini 6</h2><div class="row"><label class="f">Fecha<input type="date" id="e-f" value="${e.fecha}"></label><label class="f">Precio por jugada<input id="e-p" class="money" inputmode="numeric" value="${e.precio}"></label></div>
-  <label class="f">Nombre<input id="e-n" value="${esc(e.nombre)}"></label>
-  <div class="mfoot">${id?`<button class="btn d" onclick="del('q6esp','${id}')">Eliminar</button>`:'<span></span>'}<div class="acts"><button class="btn" onclick="close_()">Cancelar</button><button class="btn p" onclick="saveEsp('${id||''}')">Guardar</button></div></div>`)}
-function saveEsp(id){const o={fecha:val('e-f'),nombre:val('e-n')||'Sorteo especial',precio:num(val('e-p'))};if(!o.fecha||!o.precio)return toast('Poné fecha y precio');
-  if(id)Object.assign(S.q6esp.find(x=>x.id===id),o);else S.q6esp.push({id:uid(),...o});done('Sorteo especial guardado')}
+function openQ6(id,sid,f){
+ const j=id?S.q6.find(x=>x.id===id):{sid:sid||'',fecha:f||q6Prox(),pagado:false};if(!j)return;
+ const fs=[...new Set(q6Fechas(addDays(hoy(),-14),addDays(hoy(),45)).concat(j.fecha?[j.fecha]:[]))].sort();
+ const cant=id?Math.max(1,Math.round(j.monto/q6Precio(j.fecha))):((soc(j.sid)||{q6:{}}).q6.cant||1),socios=socOrd().map(s=>({id:s.id,nombre:s.nombre,nro:String(s.nro||'')})),socioFijo=V==='socio'&&!!j.sid&&!!soc(j.sid);
+ if(j.sid&&soc(j.sid)&&!socios.some(s=>s.id===j.sid)){const s=soc(j.sid);socios.push({id:s.id,nombre:s.nombre,nro:String(s.nro||'')})}
+ close_();window.dispatchEvent(new CustomEvent('agencia:editar-quini',{detail:{id:id||null,socioFijo,socios,inicial:{sid:j.sid||'',fecha:j.fecha||'',cantidad:String(cant),automatico:!id,dias:!id&&j.fecha&&S.conf.q6Dias.includes(parse(j.fecha).getDay())?[String(parse(j.fecha).getDay())]:[]},
+ puenteQuini:quiniPuente(),fechas:fs.map(x=>({id:x,nombre:fdl(x)+(S.q6esp.some(e=>e.fecha===x)?' ★ especial':'')+(x===hoy()?' (hoy)':'')})),dias:S.conf.q6Dias.map(d=>({id:String(d),nombre:DIAS[d]})),guardar:datos=>saveQ6(id,datos),eliminar:()=>{if(id)del('q6',id)},crearSocio:crearSocioParaSeguro,puenteSocio:socioPuente(true),resumen:(fecha,cantidad)=>{const c=Math.max(1,parseInt(cantidad,10)||1),p=q6Precio(fecha);return c+' × '+money(p)+' = '+money(c*p)},cerrar:close_}}));
+}
+function saveQ6(id,datos){const fecha=datos.fecha,cantidad=Math.max(1,parseInt(datos.cantidad,10)||1),anterior=id?S.q6.find(x=>x.id===id):null,o={sid:datos.sid,fecha,monto:q6Precio(fecha)*cantidad,pagado:anterior?!!anterior.pagado:false};
+ if(!o.sid||!o.fecha)return toast('Elegí el socio y el sorteo');if(!id&&datos.automatico&&!datos.dias.length)return toast('Elegí al menos un día para jugar todas las semanas');
+ if(!id&&S.q6.some(x=>x.sid===o.sid&&x.fecha===o.fecha))return toast('Ya tiene una jugada en ese sorteo; editala');
+ let lib=0;if(id){if(!anterior)return;lib=prepEditar('q6',id,o.monto,o.sid);if(anterior._lib){o.pagado=false;delete anterior._lib}Object.assign(anterior,o)}else S.q6.push({id:uid(),...o});if(lib)setTimeout(()=>toast('Lo que ya había pagado ('+money(lib)+') quedó como saldo a favor'),2500);
+ if(!id&&datos.automatico){const s=soc(o.sid),dias=datos.dias.map(Number);s.q6.dias=[...new Set([...s.q6.dias,...dias])].sort();if(dias.length){if(!s.q6.auto){s.q6.auto=true;s.q6.desde=o.fecha}s.q6.activo=true;s.q6.cant=cantidad}}
+ done('Jugada guardada');
+}
+
+function openEsp(id){const e=id?S.q6esp.find(x=>x.id===id):{fecha:'',nombre:'Sorteo especial',precio:''};if(!e)return;close_();window.dispatchEvent(new CustomEvent('agencia:especial-quini',{detail:{id:id||null,puenteQuini:quiniPuente(),inicial:{fecha:e.fecha||'',nombre:e.nombre||'',precio:fmtN(e.precio)},guardar:datos=>saveEsp(id,datos),eliminar:()=>{if(id)del('q6esp',id)},cerrar:close_}}));}
+function saveEsp(id,datos){const o={fecha:datos.fecha,nombre:datos.nombre.trim()||'Sorteo especial',precio:num(datos.precio)};if(!o.fecha||!o.precio)return toast('Poné fecha y precio');if(id){const x=S.q6esp.find(v=>v.id===id);if(!x)return;Object.assign(x,o)}else S.q6esp.push({id:uid(),...o});done('Sorteo especial guardado')}
 
 /* ---- Lotería ---- */
 function noQuiso(soId,sid,undo){S.ofertas=S.ofertas.filter(o=>!(o.soId===soId&&o.sid===sid));if(!undo)S.ofertas.push({soId,sid});save();rerender()}
 function cargarFijos(soId){const s=so(soId);let n=0;socOrd().forEach(x=>x.fijos.forEach(f=>{if(!S.lot.some(v=>v.soId===soId&&v.sid===x.id&&v.numero===f.numero)){S.lot.push({id:uid(),alta:hoy(),soId,sid:x.id,numero:f.numero,frac:f.frac?Math.min(f.frac,s.frac):s.frac,precio:s.precio,quien:'',pagado:false});n++}}));
   S.ofertas=S.ofertas.filter(o=>!(o.soId===soId&&S.lot.some(v=>v.soId===soId&&v.sid===o.sid)));save();toast(`${n} números cargados`);rerender()}
-function openVenta(id,sid,soId){const L=[...S.sorteos].sort((a,b)=>a.fecha.localeCompare(b.fecha));if(!L.length)return toast('Primero cargá un sorteo en Ajustes');
-  const v=id?S.lot.find(x=>x.id===id):{sid:sid||'',soId:soId||(sorteoAct()||L[0]).id,numero:'',quien:'',pagado:false};const s=so(v.soId)||L[0];
-  const fijo=!id&&v.sid&&soc(v.sid)?soc(v.sid).fijos.find(f=>!S.lot.some(x=>x.soId===s.id&&x.sid===v.sid&&x.numero===f.numero)):null;
-  const frac=id?v.frac:fijo&&fijo.frac?Math.min(fijo.frac,s.frac):s.frac;
-  modal(`<h2>${id?'Editar venta':'Vender número de lotería'}</h2>${socSel('v-sid',v.sid,"ventaFijo()")}
-  <label class="f">Sorteo<select id="v-so" onchange="ventaSo()">${L.map(x=>`<option value="${x.id}" data-p="${x.precio}" data-f="${x.frac}" ${x.id===s.id?'selected':''}>${esc(x.nombre)} · ${fd(x.fecha)} · ${x.frac} fracciones</option>`).join('')}</select></label>
-  <div class="row"><label class="f">Número<input id="v-n" class="mono" inputmode="numeric" value="${esc(v.numero||(fijo?fijo.numero:''))}"></label>
-  <label class="f">Fracciones<select id="v-fr" onchange="ventaTot()">${fracOpts(s.frac,frac)}</select></label></div>
-  <p class="note" id="v-tot"></p>
-  <div class="opts"><input type="checkbox" id="v-p" hidden ${v.pagado?'checked':''}>${id?'':'<label><input type="checkbox" id="v-fj">Guardar como número fijo del socio</label>'}</div>
-  <div class="mfoot">${id?`<button class="btn d" onclick="del('lot','${id}')">Eliminar</button>`:'<span></span>'}<div class="acts"><button class="btn" onclick="close_()">Cancelar</button><button class="btn" onclick="saveVenta('${id||''}')">Guardar</button><button class="btn p" onclick="guardarYCobrar('lot',()=>saveVenta('${id||''}'))">Guardar y cobrar</button></div></div>`);ventaTot()}
-function ventaSo(){const mx=+$('#v-so').selectedOptions[0].dataset.f;const cur=+val('v-fr');$('#v-fr').innerHTML=fracOpts(mx,Math.min(cur,mx)||mx);ventaTot()}
-function ventaFijo(){const s=soc(val('v-sid'));if(s&&s.fijos[0]&&!val('v-n')){$('#v-n').value=s.fijos[0].numero;const mx=+$('#v-so').selectedOptions[0].dataset.f;$('#v-fr').innerHTML=fracOpts(mx,s.fijos[0].frac?Math.min(s.fijos[0].frac,mx):mx);ventaTot()}}
-function ventaTot(){const o=$('#v-so').selectedOptions[0];const fr=+val('v-fr'),p=+o.dataset.p;$('#v-tot').innerHTML=`${fr===+o.dataset.f?'Entero · ':''}${fr} × ${money(p)} = <b style="color:var(--ink)">${money(fr*p)}</b>`}
-function saveVenta(id){const s=so(val('v-so'));const o={sid:val('v-sid'),soId:s.id,numero:val('v-n'),frac:num(val('v-fr')),precio:s.precio,pagado:$('#v-p').checked};
-  if(!o.sid||!o.numero||!o.frac)return toast('Completá socio, número y fracciones');if(o.frac>s.frac)return toast(`Máximo ${s.frac} fracciones`);
-  if(id){const x=S.lot.find(v=>v.id===id);if(x.soId===o.soId)o.precio=x.precio;const lib=prepEditar('lot',id,o.frac*o.precio,o.sid);if(x._lib){o.pagado=false;delete x._lib}Object.assign(x,o);if(lib)setTimeout(()=>toast(`Lo que ya había pagado (${money(lib)}) quedó como saldo a favor`),2500)}else S.lot.push({id:uid(),alta:hoy(),...o});
-  if($('#v-fj')&&$('#v-fj').checked){const so_=soc(o.sid);if(!so_.fijos.some(f=>f.numero===o.numero))so_.fijos.push({numero:o.numero,frac:o.frac>=s.frac?0:o.frac})}
-  S.ofertas=S.ofertas.filter(x=>!(x.soId===o.soId&&x.sid===o.sid));done('Venta guardada')}
+function openVenta(id,sid,soId){
+ const L=[...S.sorteos].sort((a,b)=>a.fecha.localeCompare(b.fecha));if(!L.length)return toast('Primero cargá un sorteo en Ajustes');
+ const v=id?S.lot.find(x=>x.id===id):{sid:sid||'',soId:soId||(sorteoAct()||L[0]).id,numero:'',pagado:false};if(!v)return;const s=so(v.soId)||L[0];
+ const fijo=!id&&v.sid&&soc(v.sid)?soc(v.sid).fijos.find(f=>!S.lot.some(x=>x.soId===s.id&&x.sid===v.sid&&x.numero===f.numero)):null,frac=id?v.frac:fijo&&fijo.frac?Math.min(fijo.frac,s.frac):s.frac;
+ const socios=socOrd().map(x=>({id:x.id,nombre:x.nombre,nro:String(x.nro||'')})),socioFijo=V==='socio'&&!!v.sid&&!!soc(v.sid);if(v.sid&&soc(v.sid)&&!socios.some(x=>x.id===v.sid)){const x=soc(v.sid);socios.push({id:x.id,nombre:x.nombre,nro:String(x.nro||'')})}
+ close_();window.dispatchEvent(new CustomEvent('agencia:editar-venta',{detail:{id:id||null,socioFijo,socios,inicial:{sid:v.sid||'',soId:s.id,numero:String(v.numero||(fijo?fijo.numero:'')),frac:String(frac),fijo:false},sorteos:L.map(x=>({id:x.id,nombre:x.nombre+' · '+fd(x.fecha)+' · '+x.frac+' fracciones',fracciones:x.frac})),guardar:(datos,cobrar)=>saveVenta(id,datos,cobrar),eliminar:()=>{if(id)del('lot',id)},crearSocio:crearSocioParaSeguro,puenteSocio:socioPuente(true),puenteVenta:loteriaPuente(),puenteEliminar:loteriaPuente(),cobrarVenta:(socioId,ventaId)=>{const venta=S.lot.find(x=>x.id===ventaId);openCobro(socioId,venta?.pagado?null:'lot|'+ventaId)},
+ fijoSocio:(sidActual,sorteoId)=>{const x=soc(sidActual),sort=so(sorteoId);if(!x||!x.fijos[0]||!sort)return null;const f=x.fijos[0];return{numero:String(f.numero),frac:String(f.frac?Math.min(f.frac,sort.frac):sort.frac)}},resumen:(sorteoId,fr)=>{const sort=so(sorteoId);if(!sort)return '';const n=+fr;return(n===sort.frac?'Entero · ':'')+n+' × '+money(sort.precio)+' = '+money(n*sort.precio)},cerrar:close_}}));
+}
+function saveVenta(id,datos,cobrar){const s=so(datos.soId);if(!s)return toast('Elegí el sorteo');const x=id?S.lot.find(v=>v.id===id):null,o={sid:datos.sid,soId:s.id,numero:datos.numero.trim(),frac:Number(datos.frac),precio:s.precio,pagado:x?!!x.pagado:false};
+ if(!o.sid||!o.numero||!o.frac)return toast('Completá socio, número y fracciones');if(o.frac>s.frac)return toast('Máximo '+s.frac+' fracciones');let venta;
+ if(id){if(!x)return;if(x.soId===o.soId)o.precio=x.precio;const lib=prepEditar('lot',id,o.frac*o.precio,o.sid);if(x._lib){o.pagado=false;delete x._lib}Object.assign(x,o);venta=x;if(lib)setTimeout(()=>toast('Lo que ya había pagado ('+money(lib)+') quedó como saldo a favor'),2500)}else{venta={id:uid(),alta:hoy(),...o};S.lot.push(venta)}
+ if(!id&&datos.fijo){const socio=soc(o.sid);if(!socio.fijos.some(f=>f.numero===o.numero))socio.fijos.push({numero:o.numero,frac:o.frac>=s.frac?0:o.frac})}
+ S.ofertas=S.ofertas.filter(x=>!(x.soId===o.soId&&x.sid===o.sid));done('Venta guardada');if(cobrar)openCobro(venta.sid,venta.pagado?null:'lot|'+venta.id);
+}
 
 /* ---- Quiniela ---- */
-let quiRows=1;
-function openQui(id,sid){const q=id?S.quiniela.find(x=>x.id===id):{sid:sid||'',fecha:F.quiF||hoy(),numeros:'',monto:'',pagado:false};quiRows=1;
-  modal(`<h2>${id?'Editar jugada':'Cargar quiniela'}</h2>${socSel('q-sid',q.sid)}
-  <label class="f">Fecha<input type="date" id="q-f" value="${q.fecha}"></label>
-  <div id="q-rows">${quiRow(0,q)}</div>
-  ${id?'':`<button class="btn sm" onclick="if(quiRows<5){$('#q-rows').insertAdjacentHTML('beforeend',quiRow(quiRows++,{}));enh($('#q-rows'))}else toast('Hasta 5 jugadas por vez')" style="margin-bottom:12px">+ Otra jugada (hasta 5)</button>`}
-  <input type="checkbox" id="q-p" hidden ${q.pagado?'checked':''}>
-  <div class="mfoot">${id?`<button class="btn d" onclick="del('quiniela','${id}')">Eliminar</button>`:'<span></span>'}<div class="acts"><button class="btn" onclick="close_()">Cancelar</button><button class="btn p" onclick="saveQui('${id||''}')">Guardar</button></div></div>`)}
-const quiRow=(i,q)=>`<div class="row"><label class="f">Números ${i?i+1:''}<input id="q-n${i}" class="mono" value="${esc(q.numeros||'')}" placeholder="Ej: 45 · 312"></label><label class="f">Monto<input id="q-m${i}" class="money" inputmode="numeric" value="${q.monto||''}"></label></div>`;
-function saveQui(id){const sid=val('q-sid'),fecha=val('q-f'),pagado=$('#q-p').checked;if(!sid||!fecha)return toast('Elegí el socio y la fecha');
-  const rows=[];for(let i=0;i<quiRows;i++){const n=val('q-n'+i),m=num(val('q-m'+i));if(n||m)rows.push({numeros:n,monto:m})}if(!rows.length)return toast('Cargá al menos una jugada');
-  if(id){const x=S.quiniela.find(v=>v.id===id);const lib=prepEditar('quiniela',id,rows[0].monto,sid);let pg=pagado;if(x._lib){pg=false;delete x._lib}Object.assign(x,{sid,fecha,pagado:pg,...rows[0]});if(lib)setTimeout(()=>toast(`Lo que ya había pagado (${money(lib)}) quedó como saldo a favor`),2500)}else rows.forEach(r=>S.quiniela.push({id:uid(),sid,fecha,pagado,...r}));
-  F.quiF=fecha;done(rows.length>1?rows.length+' jugadas guardadas':'Jugada guardada')}
+function openQui(id,sid){
+ const q=id?S.quiniela.find(x=>x.id===id):{sid:sid||'',fecha:F.quiF||hoy(),numeros:'',monto:'',pagado:false};if(!q)return;
+ const socios=socOrd().map(s=>({id:s.id,nombre:s.nombre,nro:String(s.nro||'')})),socioFijo=V==='socio'&&!!q.sid&&!!soc(q.sid);
+ if(q.sid&&soc(q.sid)&&!socios.some(s=>s.id===q.sid)){const s=soc(q.sid);socios.push({id:s.id,nombre:s.nombre,nro:String(s.nro||'')})}
+ close_();window.dispatchEvent(new CustomEvent('agencia:editar-quiniela',{detail:{id:id||null,socioFijo,socios,inicial:{sid:q.sid||'',fecha:q.fecha||'',jugadas:[{numeros:q.numeros||'',monto:fmtN(q.monto)}]},guardar:datos=>saveQui(id,datos),eliminar:()=>{if(id)del('quiniela',id)},crearSocio:crearSocioParaSeguro,puenteSocio:socioPuente(true),cerrar:close_}}));
+}
+function saveQui(id,datos){const sid=datos.sid,fecha=datos.fecha,x=id?S.quiniela.find(v=>v.id===id):null,pagado=x?!!x.pagado:false;if(!sid||!fecha)return toast('Elegí el socio y la fecha');
+ const rows=datos.jugadas.map(r=>({numeros:r.numeros.trim(),monto:num(r.monto)})).filter(r=>r.numeros||r.monto);if(!rows.length)return toast('Cargá al menos una jugada');
+ if(id){if(!x)return;const lib=prepEditar('quiniela',id,rows[0].monto,sid);let pg=pagado;if(x._lib){pg=false;delete x._lib}Object.assign(x,{sid,fecha,pagado:pg,...rows[0]});if(lib)setTimeout(()=>toast('Lo que ya había pagado ('+money(lib)+') quedó como saldo a favor'),2500)}else rows.forEach(r=>S.quiniela.push({id:uid(),sid,fecha,pagado,...r}));
+ F.quiF=fecha;done(rows.length>1?rows.length+' jugadas guardadas':'Jugada guardada');
+}
 
 /* ---- Rifa Devoto ---- */
 function openRifaPago(id,i){
@@ -758,42 +665,29 @@ function saveRifaPago(id,i,fecha,medio='',detalle=null){
   done(fecha?'Pago guardado':'Pago quitado');
 }
 
-function openRifa(id,sid){const r=id?S.rifas.find(x=>x.id===id):{sid:sid||'',anio:F.rifaA,nro:'',modo:'contado',importe:S.conf.rifaImporte,desde:hoy()};
-  modal(`<h2>${id?'Editar rifa':'Nueva Rifa Devoto'}</h2>${socSel('r-sid',r.sid)}
-  <div class="row3"><label class="f">N° de rifa<input id="r-n" class="mono" value="${esc(r.nro)}"></label><label class="f">Año<input id="r-a" type="number" value="${r.anio}"></label><label class="f">Importe<input id="r-i" class="money" inputmode="numeric" value="${r.importe}"></label></div>
-  <span class="lbl">Modalidad</span><div class="opts"><label><input type="radio" name="r-m" value="contado" ${r.modo==='contado'?'checked':''}>Contado</label><label><input type="radio" name="r-m" value="cuotas" ${r.modo==='cuotas'?'checked':''}>${S.conf.rifaCuotas} cuotas</label></div>
-  <div class="mfoot">${id?`<button class="btn d" onclick="del('rifas','${id}')">Eliminar</button>`:'<span></span>'}<div class="acts"><button class="btn" onclick="close_()">Cancelar</button><button class="btn p" onclick="saveRifa('${id||''}')">Guardar</button></div></div>`)}
-function saveRifa(id){const modo=radio('r-m');const o={sid:val('r-sid'),nro:val('r-n'),anio:+val('r-a'),importe:num(val('r-i')),modo,desde:id?S.rifas.find(x=>x.id===id).desde:hoy()};
-  if(!o.sid||!o.nro)return toast('Completá socio y número');
-  if(id){const r0=S.rifas.find(x=>x.id===id);if((r0.importe!==o.importe||r0.modo!==o.modo||r0.sid!==o.sid)&&(r0.pagos.some(Boolean)||(r0.abonos||[]).some(Boolean)))return toast('Ya tiene cuotas cobradas: anulá esos pagos antes de cambiar el importe, la modalidad o el socio')}const n=modo==='contado'?1:(id&&S.rifas.find(x=>x.id===id).modo==='cuotas'?S.rifas.find(x=>x.id===id).ncuotas:S.conf.rifaCuotas);
-  if(id){const r=S.rifas.find(x=>x.id===id);const p=r.pagos;Object.assign(r,o,{ncuotas:n});r.pagos=Array.from({length:n},(_,i)=>p[i]||null)}
-  else S.rifas.push({id:uid(),...o,ncuotas:n,pagos:Array(n).fill(null)});F.rifaA=o.anio;done('Rifa guardada')}
+function openRifa(id,sid){
+ const r=id?S.rifas.find(x=>x.id===id):{sid:sid||'',anio:F.rifaA,nro:'',modo:'contado',importe:S.conf.rifaImporte,desde:hoy()};if(!r)return;
+ const socios=socOrd().map(s=>({id:s.id,nombre:s.nombre,nro:String(s.nro||'')})),socioFijo=V==='socio'&&!!r.sid&&!!soc(r.sid);
+ if(r.sid&&soc(r.sid)&&!socios.some(s=>s.id===r.sid)){const s=soc(r.sid);socios.push({id:s.id,nombre:s.nombre,nro:String(s.nro||'')})}
+ close_();window.dispatchEvent(new CustomEvent('agencia:editar-rifa',{detail:{id:id||null,socioFijo,socios,ncuotas:S.conf.rifaCuotas,inicial:{sid:r.sid||'',numero:String(r.nro||''),anio:String(r.anio),importe:fmtN(r.importe),modo:r.modo},guardar:datos=>saveRifa(id,datos),eliminar:()=>{if(id)del('rifas',id)},crearSocio:crearSocioParaSeguro,puenteSocio:socioPuente(true),cerrar:close_}}));
+}
+function saveRifa(id,datos){const modo=datos.modo,anterior=id?S.rifas.find(x=>x.id===id):null,o={sid:datos.sid,nro:datos.numero.trim(),anio:+datos.anio,importe:num(datos.importe),modo,desde:anterior?anterior.desde:hoy()};
+ if(!o.sid||!o.nro)return toast('Completá socio y número');if(id&&!anterior)return;
+ if(anterior&&(anterior.importe!==o.importe||anterior.modo!==o.modo||anterior.sid!==o.sid)&&(anterior.pagos.some(Boolean)||(anterior.abonos||[]).some(Boolean)))return toast('Ya tiene cuotas cobradas: anulá esos pagos antes de cambiar el importe, la modalidad o el socio');
+ const n=modo==='contado'?1:(anterior&&anterior.modo==='cuotas'?anterior.ncuotas:S.conf.rifaCuotas);
+ if(anterior){const p=anterior.pagos;Object.assign(anterior,o,{ncuotas:n});anterior.pagos=Array.from({length:n},(_,i)=>p[i]||null)}else S.rifas.push({id:uid(),...o,ncuotas:n,pagos:Array(n).fill(null)});F.rifaA=o.anio;done('Rifa guardada');
+}
 
 /* ============ SOCIO (alta/edición) ============ */
-function socSel(idEl,sel,onch){if(V==='socio'&&sel&&soc(sel))return `<input type="hidden" id="${idEl}" value="${sel}"><p class="note" style="color:var(--ink)">Socio: <b>${esc(soc(sel).nombre)}</b> · N° <span class="mono">${esc(soc(sel).nro)}</span></p>`;
-  return `<label class="f" style="margin-bottom:4px">Socio<select id="${idEl}" onchange="socSelCh(this);${onch||''}"><option value="">Elegí un socio…</option><option value="__new">＋ Nuevo socio…</option>${socOrd().concat(sel&&soc(sel)&&!soc(sel).activo?[soc(sel)]:[]).map(s=>`<option value="${s.id}" ${s.id===sel?'selected':''}>${esc(s.nombre)} · ${esc(s.nro)}</option>`).join('')}</select></label>
-  <div class="socadd" id="${idEl}-ad"><button type="button" class="lnk small" onclick="socNewOpen('${idEl}')">＋ ¿No está? Crear socio nuevo</button></div>
-  <div class="socnew" id="${idEl}-nw" hidden><b class="small">Socio nuevo</b><div class="row" style="margin-top:6px"><label class="f">Nombre y apellido<input id="${idEl}-nn" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();socNewOk('${idEl}')}"></label><label class="f">Celular<input id="${idEl}-nt" inputmode="tel" placeholder="Ej: 3544 551122" onkeydown="if(event.key==='Enter'){event.preventDefault();socNewOk('${idEl}')}"></label></div>
-  <div class="acts" style="justify-content:flex-end"><button type="button" class="btn sm" onclick="socNewCancel('${idEl}')">Cancelar</button><button type="button" class="btn sm p" onclick="socNewOk('${idEl}')">Crear y elegir</button></div></div>`}
-/* alta rápida de socio desde cualquier formulario (lotería, seguro, juegos…) */
-function socSelCh(el){if(el.value==='__new'){el.value='';socNewOpen(el.id)}}
-function socNewOpen(idEl){const p=$('#'+idEl+'-nw'),a=$('#'+idEl+'-ad');if(!p)return;p.hidden=false;if(a)a.hidden=true;setTimeout(()=>{const i=$('#'+idEl+'-nn');if(i)i.focus()},30)}
-function socNewCancel(idEl){const p=$('#'+idEl+'-nw'),a=$('#'+idEl+'-ad');if(p)p.hidden=true;if(a)a.hidden=false}
-function socNewOk(idEl){const nombre=val(idEl+'-nn'),tel=val(idEl+'-nt');if(!nombre)return toast('Poné el nombre del socio');const sel=$('#'+idEl);
-  const ya=S.socios.find(x=>x.nombre.trim().toLowerCase()===nombre.toLowerCase());let s=ya;
-  if(!ya){s={id:uid(),nro:String(Math.max(0,...S.socios.map(x=>parseInt(x.nro)||0))+1),nombre,tel,dir:'',activo:true,dni:'',nota:'',fijos:[],q6:{activo:false,dias:[],cant:1}};S.socios.push(s);save()}
-  else if(!ya.activo){ya.activo=true;save()}
-  if(sel&&![...sel.options].some(o=>o.value===s.id)){const o=document.createElement('option');o.value=s.id;o.textContent=`${s.nombre} · ${s.nro}`;sel.appendChild(o)}
-  if(sel){sel.value=s.id;sel.dispatchEvent(new Event('change'))}socNewCancel(idEl);$('#'+idEl+'-nn').value='';$('#'+idEl+'-nt').value='';
-  toast(ya?`${ya.nombre} ya estaba cargado: lo elegí`:`Socio creado: ${s.nombre} · N° ${s.nro}`)}
 function openSocio(id){
   const socio=id?soc(id):null;
   if(id&&!socio)return;
   close_();
-  const nro=String(Math.max(0,...S.socios.map(x=>parseInt(x.nro)||0))+1);
+  const nro=window.sociosHelpers.proximoNumeroSocio(S.socios);
   window.dispatchEvent(new CustomEvent('agencia:editar-socio',{
     detail:{
       id:id||null,
+      ...socioPuente(false,id),
       inicial:{
         nombre:socio?.nombre||'',nro:socio?String(socio.nro??''):nro,
         tel:socio?.tel||'',dir:socio?.dir||'',
@@ -842,7 +736,7 @@ function publicarAjustes(){
     usuarios:S.usuarios.map(({id,nombre,rol})=>({id,nombre,rol})),
     perfil:{id:CUR.id,rol:CUR.rol},
     guardar:saveConf,guardarDias:saveTotoDias,resetDias:resetTotoDias,
-    agregarAnio:addAnio,abrirSorteo:openSorteo,descargar:bkDescargar,restaurar:bkCargar,borrar:borrarTodo,salir,
+    puenteAnio:anioLoteriaPuente(),agregarAnio:addAnio,abrirSorteo:openSorteo,descargar:bkDescargar,restaurar:bkCargar,borrar:borrarTodo,salir,
   }:null;
   window.dispatchEvent(new CustomEvent('agencia:ajustes',{detail:detalle}));
 }
@@ -881,6 +775,8 @@ function openSorteo(id){
   window.dispatchEvent(new CustomEvent('agencia:editar-sorteo',{
     detail:{
       id:id||null,
+      ventas:id?S.lot.filter(l=>l.soId===id).length:0,
+      puenteSorteo:sorteoPuente(),
       inicial:{nombre:sorteo.nombre,fecha:sorteo.fecha,frac:String(sorteo.frac),precio:fmtN(sorteo.precio)},
       guardar:datos=>saveSorteo(id,datos),
       eliminar:()=>{if(id)delSorteo(id)},
@@ -972,7 +868,9 @@ function openCobro(sid,only){
   const rifas=todos.filter(m=>m.t==='rifa'&&(!rifaId||m.ref[1]===rifaId));
   close_();
   window.dispatchEvent(new CustomEvent('agencia:registrar-cobro',{detail:{
-    clave:sid+'|'+(only||''),socio:sname(sid),
+    clave:sid+'|'+(only||''),socio:sname(sid),socioId:sid,
+    obtenerRevision:()=>{if(PENDIENTES.length||guardando)throw new Error('Esperá a que termine el guardado y abrí el cobro de nuevo.');return revision},
+    sincronizar:datos=>{if(PENDIENTES.length||guardando)throw new Error('Hay cambios pendientes. Esperá el guardado antes de recargar.');cargarAgencia(datos);close_();toast('Cobro registrado')},
     resumen:[
       {titulo:'Deuda vencida',texto:money(cuentaActual.deuda),color:cuentaActual.deuda?'bad':undefined},
       {titulo:'Saldo a favor',texto:money(cuentaActual.favor),color:cuentaActual.favor?'ok':undefined},
@@ -1086,29 +984,23 @@ function anularPago(key){const[k,id,i0]=key.split('|');const ref=i0===undefined?
   else if(k==='rifa'){const r=S.rifas.find(x=>x.id===id);r.pagos[+i0]=null;if(r.medios)r.medios[+i0]=''}
   else{const x=S[k].find(v=>v.id===id);x.pagado=false;delete x.fpago;delete x.medio;delete x.det}
   const fv=liberarDeCobros(ref,true);save();close_();toast(fv?`Pago anulado · ${money(fv)} quedó a favor`:'Pago anulado');rerender()}
-const esMovil=()=>/Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 function wspTexto(sid){const s=soc(sid);const d=neto(sid),fv=favor(sid);
   return `Hola ${s.nombre.split(' ')[0]}! `+(d?`Te paso tu estado de cuenta. Saldo pendiente: ${money(d).replace(/\u00a0/g,' ')}.`:`Te paso tu estado de cuenta. Estás al día${fv?`, con ${money(fv).replace(/\u00a0/g,' ')} a favor`:''}. ¡Gracias!`)+`\n${CUR?CUR.nombre:''}`}
-function wsp(sid){const s=soc(sid);const n=waNum(s.tel||'');if(!n){toast('Revisá el celular del socio: característica + número, 10 dígitos');return openSocio(sid)}
-  modal(`<h2>Enviar por WhatsApp</h2><p class="mu small" style="margin-bottom:12px">A ${esc(s.nombre)} · +${n}</p>
-  <label class="f">Mensaje<textarea id="w-t" rows="4">${esc(wspTexto(sid))}</textarea></label>
-  <div class="opts"><label><input type="checkbox" id="w-pdf" checked>Adjuntar estado de cuenta en PDF</label></div>
-  <p class="note">${esMovil()?'Se abre el menú para compartir: elegí <b>WhatsApp</b> y el chat de '+esc(s.nombre.split(' ')[0])+'.':'El PDF se descarga en tu compu y se abre el chat con el mensaje escrito. En WhatsApp tocá el clip <b>📎 → Documento</b> y elegí el PDF de <b>Descargas</b> (o arrastralo al chat).'}</p>
-  <div class="mfoot"><span></span><div class="acts"><button class="btn" onclick="close_()">Cancelar</button><button class="btn p" id="w-ok" onclick="wspEnviar('${sid}')">Enviar</button></div></div>`)}
-async function wspEnviar(sid){const s=soc(sid),n=waNum(s.tel||''),txt=val('w-t'),conPdf=$('#w-pdf').checked;const b=$('#w-ok');b.textContent='Preparando…';b.disabled=true;
-  let pdf=null;if(conPdf){pdf=await pdfSocio(sid,true);if(!pdf){toast('Para armar el PDF hace falta internet. Se envía solo el mensaje.')}}
-  const file=pdf?new File([pdf.blob],pdf.nombre,{type:'application/pdf'}):null;
-  // celular (o compu con menú compartir): manda PDF + mensaje juntos
-  if(file&&esMovil()&&navigator.canShare&&navigator.canShare({files:[file]})){try{await navigator.share({files:[file],text:txt});close_();toast('Listo');return}catch(e){if(e.name==='AbortError'){b.textContent='Enviar';b.disabled=false;return}}}
-  if(file){const u=URL.createObjectURL(pdf.blob);const a=document.createElement('a');a.href=u;a.download=pdf.nombre;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),4000)}
-  close_();abrirChat(n,txt);
-  if(file)setTimeout(()=>snack(`PDF descargado: <b>${esc(pdf.nombre)}</b>. Adjuntalo en el chat con 📎`,'Descargar de nuevo',()=>{const u=URL.createObjectURL(pdf.blob);const a=document.createElement('a');a.href=u;a.download=pdf.nombre;document.body.appendChild(a);a.click();a.remove()}),900)}
-function abrirChat(n,txt){const t=encodeURIComponent(txt);const web=`https://web.whatsapp.com/send?phone=${n}&text=${t}`,app=`whatsapp://send?phone=${n}&text=${t}`;
-  if(esMovil()){location.href=`https://wa.me/${n}?text=${t}`;return}
-  if(S.conf.wsp==='web'){const w=window.open(web,'_blank');if(!w)location.href=web;return}
-  location.href=app;setTimeout(()=>{if(!$('#snack').classList.contains('on'))snack('¿No se abrió la app de WhatsApp?','Abrir WhatsApp Web',()=>{const w=window.open(web,'_blank');if(!w)location.href=web})},2500)}
-let snT;function snack(t,btn,fn){const e=$('#snack');e.innerHTML=`<span>${t}</span><button class="btn sm">${btn}</button><button class="btn sm g" aria-label="Cerrar">✕</button>`;
-  const[b1,b2]=e.querySelectorAll('button');b1.onclick=()=>{e.classList.remove('on');fn()};b2.onclick=()=>e.classList.remove('on');e.classList.add('on');clearTimeout(snT);snT=setTimeout(()=>e.classList.remove('on'),9000)}
+function wsp(sid){const s=soc(sid);if(!s)return;const n=window.sociosHelpers.numeroWhatsApp(s.tel||'');if(!n){toast('Revisá el celular del socio: característica + número, 10 dígitos');return openSocio(sid)}close_();window.dispatchEvent(new CustomEvent('agencia:whatsapp',{detail:{nombre:s.nombre,telefono:n,movil:window.sociosHelpers.esMovil(),mensaje:wspTexto(sid),enviar:datos=>wspEnviar(sid,datos),cerrar:close_}}));}
+async function wspEnviar(sid,datos){const s=soc(sid);if(!s)return;const n=window.sociosHelpers.numeroWhatsApp(s.tel||''),txt=datos.mensaje,conPdf=datos.pdf;
+ let pdf=null;if(conPdf){pdf=await pdfSocio(sid,true);if(!pdf)toast('Para armar el PDF hace falta internet. Se envía solo el mensaje.')}
+ const file=pdf?new File([pdf.blob],pdf.nombre,{type:'application/pdf'}):null;
+ if(file&&window.sociosHelpers.esMovil()&&navigator.canShare&&navigator.canShare({files:[file]})){try{await navigator.share({files:[file],text:txt});close_();toast('Listo');return}catch(e){if(e.name==='AbortError')return}}
+ if(file){const u=URL.createObjectURL(pdf.blob);const a=document.createElement('a');a.href=u;a.download=pdf.nombre;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),4000)}
+ close_();window.sociosHelpers.abrirChatWhatsApp(n,txt,S.conf.wsp,abrirWeb=>{if(!snackActivo)snack('¿No se abrió la app de WhatsApp?','Abrir WhatsApp Web',abrirWeb)});
+ if(file)setTimeout(()=>snack('PDF descargado: '+pdf.nombre+'. Adjuntalo en el chat con 📎','Descargar de nuevo',()=>{const u=URL.createObjectURL(pdf.blob);const a=document.createElement('a');a.href=u;a.download=pdf.nombre;document.body.appendChild(a);a.click();a.remove()}),900)
+}
+
+let snT,snackActivo=false;function snack(t,btn,fn){
+  const cerrar=()=>{snackActivo=false;clearTimeout(snT);window.dispatchEvent(new CustomEvent('agencia:aviso-accion',{detail:null}))};
+  snackActivo=true;clearTimeout(snT);
+  window.dispatchEvent(new CustomEvent('agencia:aviso-accion',{detail:{texto:t,boton:btn,cerrar,ejecutar:()=>{cerrar();fn()}}}));
+  snT=setTimeout(cerrar,9000)}
 function cheques(){const L=[];S.cobros.forEach(c=>{if(!c.anulado&&['cheque','echeq'].includes(c.medio)&&c.det&&c.det.fcobro&&!c.det.dep)L.push({k:'c|'+c.id,sid:c.sid,monto:c.monto,medio:c.medio,det:c.det})});
   S.seguros.forEach(x=>x.cuotas.forEach((q,i)=>{if(q.det&&q.det.fcobro&&!q.det.dep&&!q.det.c)L.push({k:'s|'+x.id+'|'+i,sid:x.sid,monto:q.imp,medio:q.medio,det:q.det})}));
   const seen=new Set();return L.filter(c=>{const key=c.medio+(c.det.nro||'')+c.det.fcobro+c.sid;if(c.det.nro&&seen.has(key))return false;seen.add(key);return true}).sort((a,b)=>a.det.fcobro.localeCompare(b.det.fcobro))}
@@ -1211,69 +1103,61 @@ function totoPer(){const mAct=hoy().slice(0,7);let v=F.totoV||(F.totoM==='todo'?
   if(v==='todo')return{v,L:[...S.toto],tit:'Todos los días',low:'todos los días',key:'completo'};
   const meses=[...new Set(S.toto.map(x=>x.fecha.slice(0,7)).concat(mAct))].sort();const m=F.totoM&&meses.includes(F.totoM)?F.totoM:mAct;F.totoM=m;
   return{v,m,meses,L:S.toto.filter(x=>x.fecha.slice(0,7)===m),tit:mesTxt(m),low:mesTxt(m).toLowerCase(),key:m}}
-VIEWS.toto=()=>{const P=totoPer(),v=P.v;
-  const L=P.L.sort((a,b)=>b.fecha.localeCompare(a.fecha));
-  const T={total:0,com:0,neto:0,prem:0,gral:0,pago:0,debe:0,premAg:0};const J={};TOTO_J.forEach(([k])=>J[k]=sum(L,x=>+x[k]||0));L.forEach(x=>{const c=totoCalc(x);for(const k in T)T[k]+=c[k]});
-  const ix=v==='mes'?P.meses.indexOf(P.m):0;
-  const nav=v==='dia'?[`F.totoD='${addDays(P.d,-1)}';rerender()`,`F.totoD='${addDays(P.d,1)}';rerender()`,false,false,'Día']:v==='mes'?[`F.totoM='${P.meses[ix-1]||P.m}';rerender()`,`F.totoM='${P.meses[ix+1]||P.m}';rerender()`,ix<=0,ix>=P.meses.length-1,'Mes']:null;
-  const sub=v==='dia'?(L.length?`${L.length} fila${L.length===1?'':'s'} cargada${L.length===1?'':'s'}`:'Sin cargar')+(P.d!==hoy()?` · <button class="lnk" onclick="F.totoD=hoy();rerender()">Ir a hoy</button>`:' · Hoy'):`${L.length} día${L.length===1?'':'s'} cargado${L.length===1?'':'s'}`;
-  return `<div class="head"><div><h1 class="gt" style="--c:var(--toto)">Toto Ortega</h1><div class="sub">Planilla diaria: lo jugado en cada sorteo, menos el ${TOTO_PCT}% y los premios.</div></div><button class="btn p" onclick="openToto()">+ Cargar día</button></div>
-  <div class="card selbar totobar"><div class="tnav">${nav?`<button class="btn" ${nav[2]?'disabled':''} onclick="${nav[0]}" aria-label="${nav[4]} anterior">‹</button>`:''}
-    <div class="selbox"><b>${P.tit}</b><span>${sub}</span></div>
-    ${nav?`<button class="btn" ${nav[3]?'disabled':''} onclick="${nav[1]}" aria-label="${nav[4]} siguiente">›</button>`:''}</div>
-    <div class="seg tseg"><button class="${v==='dia'?'on':''}" onclick="F.totoV='dia';rerender()">Por día</button><button class="${v==='mes'?'on':''}" onclick="F.totoV='mes';rerender()">Por mes</button><button class="${v==='todo'?'on':''}" onclick="F.totoV='todo';rerender()">Todo</button></div></div>
-  <div class="grid g3" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
-    <div class="kpi"><small>Total jugado</small><b>${money(T.total)}</b></div>
-    <div class="kpi"><small>${TOTO_PCT}%</small><b>${money(T.com)}</b></div>
-    <div class="kpi"><small>Total − ${TOTO_PCT}%</small><b>${money(T.neto)}</b></div>
-    <div class="kpi"><small>Premios</small><b>${money(T.prem)}</b></div>
-    <div class="kpi ${T.gral<0?'kbad':''}"><small>Total general</small><b class="${T.gral<0?'bad':'ok'}">${money(T.gral)}</b><span class="mu small">${T.gral<0?'En contra':T.gral>0?'A favor':'—'}</span></div></div>
-  <div class="grid g3" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr))">
-    <div class="kpi"><small>Me pagó · ${P.low}</small><b class="ok">${money(T.pago)}</b></div>
-    <div class="kpi ${T.debe>0?'kbad':''}"><small>Me debe · ${P.low}</small><b class="${T.debe>0?'bad':''}">${money(Math.max(0,T.debe))}</b><span class="mu small">${T.debe>0?`Del total − ${TOTO_PCT}%, lo que le falta pagar`:'Al día'}</span></div></div>
-  <div class="card"><div class="ch"><h2>${P.tit}</h2>${L.length?`<button class="btn sm" onclick="pdfToto()">⬇ PDF</button>`:''}</div>
-  ${L.length?`<div class="tw"><table class="toto"><thead><tr><th>Fecha</th>${TOTO_J.map(([,t])=>`<th class="r">${t}</th>`).join('')}<th class="r">Total</th><th class="r">${TOTO_PCT}%</th><th class="r">Total − ${TOTO_PCT}%</th><th class="r">Premios</th><th class="r" title="Solo informativo, no entra en ninguna cuenta">Premios agencia (Ema)</th><th class="r">Total general</th><th class="r">Pagó</th><th class="r">Debe</th><th></th><th style="text-align:center">Pago</th></tr></thead>
-    <tbody>${L.map(x=>{const c=totoCalc(x);return `<tr class="ck ${totoEst(c)}" onclick="openToto('${x.id}')"><td style="white-space:nowrap">${fd(x.fecha)}</td>${TOTO_J.map(([k])=>`<td class="r">${x[k]?money(x[k]):'<span class="mu">—</span>'}${totoConcDe(x,k)?`<span class="tconc">N° ${totoConcDe(x,k)}</span>`:''}</td>`).join('')}<td class="r" style="font-weight:600">${money(c.total)}</td><td class="r mu">${money(c.com)}</td><td class="r">${money(c.neto)}</td><td class="r">${c.prem?money(c.prem):'<span class="mu">—</span>'}</td><td class="r" style="color:var(--toto)">${c.premAg?money(c.premAg):'<span class="mu">—</span>'}</td><td class="r">${sgn(c.gral)}</td><td class="r">${c.pago?money(c.pago):'<span class="mu">—</span>'}${c.P.length>1?`<br><span class="mu small" style="font-weight:400">${c.P.length} pagos</span>`:''}</td><td class="r">${debeTxt(c.debe)}</td><td class="r"><button class="btn sm g" onclick="event.stopPropagation();openToto('${x.id}')">Editar</button></td><td style="white-space:nowrap" onclick="event.stopPropagation()"><div class="tpago"><label class="tchk" title="${c.saldado?'Pagó todo':'Marcar como pagado completo'}"><input type="checkbox" ${c.saldado?'checked':''} onchange="totoPago('${x.id}',this.checked)" aria-label="Pagó todo"></label><button class="btn sm tparc" onclick="openTotoPago('${x.id}')">Parcial</button></div></td></tr>`}).join('')}</tbody>
-    <tfoot><tr><td>Total</td>${TOTO_J.map(([k])=>`<td class="r">${money(J[k])}</td>`).join('')}<td class="r">${money(T.total)}</td><td class="r">${money(T.com)}</td><td class="r">${money(T.neto)}</td><td class="r">${money(T.prem)}</td><td class="r" style="color:var(--toto)">${money(T.premAg)}</td><td class="r">${sgn(T.gral)}</td><td></td><td></td><td></td><td style="text-align:center" class="mu small">${L.filter(x=>totoCalc(x).saldado).length}/${L.length}</td></tr></tfoot></table></div>
-    <div class="legend"><span><i style="background:var(--ok)"></i>Pagó todo</span><span><i style="background:var(--warn)"></i>Pago parcial</span><span><i style="background:var(--bad)"></i>No pagó</span></div>`
-   :empt(v==='todo'?'Todavía no cargaste ningún día.':v==='dia'?`No hay nada cargado ${P.low}.`:`No hay días cargados en ${P.low}.`,`<button class="btn" onclick="openToto(null,'${v==='dia'?P.d:''}')">+ Cargar ${v==='dia'?'este día':'día'}</button>`)}</div>`};
-function openToto(id,f){const x=id?S.toto.find(v=>v.id===id):{fecha:f||(F.totoV==='dia'&&F.totoD)||hoy(),premios:''};
-  modal(`<h2>${id?'Editar día · Toto Ortega':'Cargar día · Toto Ortega'}</h2>
-  <label class="f">Fecha<input type="date" id="t-f" value="${x.fecha}"></label>
-  <span class="lbl">Jugado por sorteo</span>
-  <div class="row">${TOTO_J.map(([k,t])=>`<label class="f" for="t-${k}"><span class="tjh"><span>${t}</span><span class="tjn">N°<input id="tc-${k}" class="tcin" inputmode="numeric" value="${(id?totoConcDe(x,k):totoConc(x.fecha,'',k))||''}" oninput="this.dataset.man=1;this.value=this.value.replace(/\D/g,'')" aria-label="N° de concurso ${t}" title="N° de concurso"></span></span><input id="t-${k}" class="money" inputmode="numeric" value="${x[k]||''}" oninput="totoPrev()"></label>`).join('')}</div>
-  <p class="mu small" style="margin-top:0;text-align:center">El N° de concurso de cada sorteo se completa solo: sube 1 en cada día de sorteo (se cambia en Ajustes). Lo podés cambiar.</p>
-  <div class="row"><label class="f">Premios pagados<input id="t-premios" class="money" inputmode="numeric" value="${x.premios||''}" oninput="totoPrev()"></label><label class="f">Premios pagados por agencia (Ema)<input id="t-premag" class="money" inputmode="numeric" value="${x.premiosAg||''}"></label></div><p class="mu small" style="margin-top:8px;text-align:center">Los premios de la agencia son solo para anotar: no se restan de ninguna cuenta.</p>
-  <p class="warn small" id="t-dup" style="margin-top:8px;text-align:center"></p><div class="card" id="t-prev" style="margin-top:10px;padding:12px 14px"></div>
-  <div class="mfoot">${id?`<button class="btn d" onclick="delToto('${id}')">Eliminar</button>`:'<span></span>'}<div class="acts"><button class="btn" onclick="close_()">Cancelar</button><button class="btn p" onclick="saveToto('${id||''}')">Guardar</button></div></div>`);TOTO_ED=id||'';const tf=$('#t-f');const rc=()=>{TOTO_J.forEach(([k])=>{const ci=$('#tc-'+k);if(ci&&!ci.dataset.man){const n=totoConc(val('t-f')||hoy(),TOTO_ED,k);ci.value=n||''}});totoPrev()};if(tf){tf.addEventListener('change',rc);tf.addEventListener('input',rc)}totoPrev()}
-function totoLeer(){const o={fecha:val('t-f')||hoy(),premios:num(val('t-premios')),premiosAg:num(val('t-premag')),conc:Object.fromEntries(TOTO_J.map(([k])=>[k,parseInt(val('tc-'+k),10)||null])),concurso:null};TOTO_J.forEach(([k])=>o[k]=num(val('t-'+k)));return o}
-let TOTO_ED='';function totoPrev(){const e=$('#t-prev');if(!e)return;const o=totoLeer();const x0=TOTO_ED?S.toto.find(v=>v.id===TOTO_ED):null;if(x0){o.pagos=x0.pagos;o.pagado=x0.pagado}const c=totoCalc(o);
-  const du=$('#t-dup');if(du)du.textContent=S.toto.some(v=>v.fecha===o.fecha&&v.id!==TOTO_ED)?`Ojo: ya hay un día cargado el ${fd(o.fecha)}. Si guardás, queda otra fila con esa fecha.`:'';
-  e.innerHTML=`<div class="list"><div><span>Total</span><b>${money(c.total)}</b></div><div><span>− ${TOTO_PCT}%</span><b>${money(c.com)}</b></div><div><span>Total − ${TOTO_PCT}%</span><b>${money(c.neto)}</b></div><div><span>− Premios</span><b>${money(c.prem)}</b></div><div><span><b>Total general</b> <span class="mu small">${c.gral<0?'(en contra)':c.gral>0?'(a favor)':''}</span></span>${sgn(c.gral)}</div><div><span>Tiene que pagar (total − ${TOTO_PCT}%)</span><b>${money(c.neto)}</b></div>${c.pago?`<div><span>Ya pagó</span><b>${money(c.pago)}</b></div><div><span><b>Debe</b></span>${debeTxt(c.debe)}</div>`:''}</div>`}
-function saveToto(id){const o=totoLeer();
-  try{if(id){const x=S.toto.find(v=>v.id===id);if(!Array.isArray(x.pagos)){x.pagos=totoPagosDe(x,totoCalc(x).neto);delete x.pagado}Object.assign(x,o)}else S.toto.push({id:uid(),...o,pagos:[]});F.totoM=o.fecha.slice(0,7);F.totoD=o.fecha;done('Día guardado')}catch(e){console.error(e);toast('No se pudo guardar: '+(e&&e.message||e))}}
+function puenteMutacion(sincronizar){return {obtenerRevision:()=>{if(PENDIENTES.length||guardando)throw new Error('Esperá a que termine el guardado.');return revision},bloquear:()=>{if(PENDIENTES.length||guardando)throw new Error('Esperá a que termine el guardado.');$('#side').inert=true},desbloquear:()=>estadoGuardado(),sincronizar:(datos,resultado)=>{if(PENDIENTES.length||guardando)throw new Error('Hay cambios pendientes.');sincronizar(datos,resultado)}}}
+function quiniPuente(){return puenteMutacion((datos,resultado)=>{cargarAgencia(datos);close_();toast(resultado.liberado?'Saldo a favor actualizado':'Quini actualizado')})}
+function seguroPuente(){return puenteMutacion((datos,resultado)=>{cargarAgencia(datos);close_();toast(resultado.liberado?'Saldo a favor actualizado':'Seguro actualizado')})}
+function loteriaPuente(){return puenteMutacion((datos,resultado)=>{cargarAgencia(datos);close_();toast(resultado.liberado?'Saldo a favor actualizado':'Venta actualizada')})}
+function anioLoteriaPuente(){return puenteMutacion((datos,resultado)=>{cargarAgencia(datos);toast(resultado.cantidad?resultado.cantidad+' sorteos agregados':'Ya estaban cargados')})}
+function sorteoPuente(){return puenteMutacion(datos=>{cargarAgencia(datos);close_();toast('Sorteo actualizado')})}
+function totoPuente(){return puenteMutacion(datos=>{cargarAgencia(datos);close_();toast('Planilla actualizada')})}
+function socioPuente(rapido,id){return puenteMutacion((datos,resultado)=>{if(!rapido){if(!id){STAB='det';SID=resultado.id;V='socio'}else if(!datos.estado.socios.some(s=>s.id===id)){V='socios'}}cargarAgencia(datos);if(!rapido){close_();toast(id?'Socio actualizado':'Socio creado')}})}
+function publicarToto(){
+ if(V!=='toto'){window.dispatchEvent(new CustomEvent('agencia:toto',{detail:null}));return}
+ const P=totoPer(),v=P.v,L=P.L.sort((a,b)=>b.fecha.localeCompare(a.fecha));
+ if(window.totoServidor){const ix=v==='mes'?P.meses.indexOf(P.m):0;const subtitulo=v==='dia'?(L.length?L.length+' fila'+(L.length===1?'':'s')+' cargada'+(L.length===1?'':'s'):'Sin cargar')+(P.d===hoy()?' · Hoy':''):L.length+' día'+(L.length===1?'':'s')+' cargado'+(L.length===1?'':'s');
+ const vacio={total:'',com:'',neto:'',prem:'',premAg:'',gral:'',pago:'',debe:'',signoGral:0,signoDebe:0,valores:[]};
+ window.dispatchEvent(new CustomEvent('agencia:toto',{detail:{...totoPuente(),periodoClave:P.key,periodo:v,titulo:P.tit,subtitulo,irHoy:v==='dia'&&P.d!==hoy(),anteriorDeshabilitado:v==='mes'&&ix<=0,siguienteDeshabilitado:v==='mes'&&ix>=P.meses.length-1,porcentaje:TOTO_PCT,resumen:[],pagado:'',deuda:'',hayDeuda:false,periodoBajo:P.low,juegos:TOTO_J.map(([,t])=>t),filas:[],total:vacio,cantidadPagados:0,cargar:()=>openToto(null,v==='dia'?P.d:''),editar:openToto,pdf:pdfToto,pago:totoPago,pagoParcial:openTotoPago,ir:h=>{if(v==='dia')F.totoD=addDays(P.d,h);else if(v==='mes')F.totoM=P.meses[ix+h]||P.m;rerender()},hoy:()=>{F.totoD=hoy();rerender()},cambiar:n=>{F.totoV=n;rerender()}}}));return}
+ const T={total:0,com:0,neto:0,prem:0,gral:0,pago:0,debe:0,premAg:0},J={};
+ TOTO_J.forEach(([k])=>J[k]=sum(L,x=>+x[k]||0));L.forEach(x=>{const c=totoCalc(x);for(const k in T)T[k]+=c[k]});
+ const ix=v==='mes'?P.meses.indexOf(P.m):0;
+ const subtitulo=v==='dia'?(L.length?L.length+' fila'+(L.length===1?'':'s')+' cargada'+(L.length===1?'':'s'):'Sin cargar')+(P.d===hoy()?' · Hoy':''):L.length+' día'+(L.length===1?'':'s')+' cargado'+(L.length===1?'':'s');
+ const detalle=c=>({total:money(c.total),com:money(c.com),neto:money(c.neto),prem:c.prem?money(c.prem):'—',premAg:c.premAg?money(c.premAg):'—',gral:money(c.gral),pago:c.pago?money(c.pago):'—',debe:c.debe>0?money(c.debe):c.debe<0?'+'+money(-c.debe):'—',signoGral:Math.sign(c.gral),signoDebe:Math.sign(c.debe)});
+ const vista={...totoPuente(),periodoClave:P.key,periodo:v,titulo:P.tit,subtitulo,irHoy:v==='dia'&&P.d!==hoy(),anteriorDeshabilitado:v==='mes'&&ix<=0,siguienteDeshabilitado:v==='mes'&&ix>=P.meses.length-1,porcentaje:TOTO_PCT,
+  resumen:[['Total jugado',money(T.total),''],[TOTO_PCT+'%',money(T.com),''],['Total − '+TOTO_PCT+'%',money(T.neto),''],['Premios',money(T.prem),''],['Total general',money(T.gral),T.gral<0?'En contra':T.gral>0?'A favor':'—']],
+  pagado:money(T.pago),deuda:money(Math.max(0,T.debe)),hayDeuda:T.debe>0,periodoBajo:P.low,juegos:TOTO_J.map(([,t])=>t),
+  filas:L.map(x=>{const c=totoCalc(x);return{id:x.id,fecha:fd(x.fecha),valores:TOTO_J.map(([k])=>({monto:x[k]?money(x[k]):'—',concurso:totoConcDe(x,k)})),...detalle(c),estado:totoEst(c),saldado:c.saldado,pagos:c.P.length}}),
+  total:{...detalle(T),valores:TOTO_J.map(([k])=>money(J[k])),prem:money(T.prem),premAg:money(T.premAg)},cantidadPagados:L.filter(x=>totoCalc(x).saldado).length,
+  cargar:()=>openToto(null,v==='dia'?P.d:''),editar:openToto,pdf:pdfToto,pago:totoPago,pagoParcial:openTotoPago,
+  ir:h=>{if(v==='dia')F.totoD=addDays(P.d,h);else if(v==='mes')F.totoM=P.meses[ix+h]||P.m;rerender()},hoy:()=>{F.totoD=hoy();rerender()},cambiar:n=>{F.totoV=n;rerender()}};
+ window.dispatchEvent(new CustomEvent('agencia:toto',{detail:vista}));
+}
+function totoDatos(datos,id){const o={fecha:datos.fecha||hoy(),premios:num(datos.premios),premiosAg:num(datos.premiosAg),conc:Object.fromEntries(TOTO_J.map(([k])=>[k,parseInt(datos.concursos?.[k],10)||null])),concurso:null};TOTO_J.forEach(([k])=>o[k]=num(datos.jugadas?.[k]));const x=id?S.toto.find(v=>v.id===id):null;if(x){o.pagos=x.pagos;o.pagado=x.pagado}return o}
+function openToto(id,f){const x=id?S.toto.find(v=>v.id===id):{fecha:f||(F.totoV==='dia'&&F.totoD)||hoy(),premios:''};if(!x)return;
+ const concursos=fecha=>Object.fromEntries(TOTO_J.map(([k])=>[k,String(totoConc(fecha||hoy(),id||'',k)||'')])),inicial={fecha:x.fecha,jugadas:Object.fromEntries(TOTO_J.map(([k])=>[k,fmtN(x[k])])),concursos:Object.fromEntries(TOTO_J.map(([k])=>[k,window.totoServidor?'':String((id?totoConcDe(x,k):totoConc(x.fecha,'',k))||'')])),premios:fmtN(x.premios),premiosAg:fmtN(x.premiosAg)};
+ close_();window.dispatchEvent(new CustomEvent('agencia:editar-toto',{detail:{id:id||null,inicial,juegos:TOTO_J.map(([k,t])=>({id:k,nombre:t})),...totoPuente(),concursos,guardar:datos=>saveToto(id,datos),eliminar:()=>{if(id)delToto(id)},cerrar:close_,vista:datos=>{const o=totoDatos(datos,id),c=totoCalc(o),du=S.toto.some(v=>v.fecha===o.fecha&&v.id!==id)?'Ojo: ya hay un día cargado el '+fd(o.fecha)+'. Si guardás, queda otra fila con esa fecha.':'',filas=[{nombre:'Total',valor:money(c.total),signo:0},{nombre:'− '+TOTO_PCT+'%',valor:money(c.com),signo:0},{nombre:'Total − '+TOTO_PCT+'%',valor:money(c.neto),signo:0},{nombre:'− Premios',valor:money(c.prem),signo:0},{nombre:'Total general'+(c.gral<0?' (en contra)':c.gral>0?' (a favor)':''),valor:money(c.gral),signo:Math.sign(c.gral)},{nombre:'Tiene que pagar (total − '+TOTO_PCT+'%)',valor:money(c.neto),signo:0}];if(c.pago)filas.push({nombre:'Ya pagó',valor:money(c.pago),signo:0},{nombre:'Debe',valor:c.debe>0?money(c.debe):c.debe<0?'+'+money(-c.debe):'—',signo:-Math.sign(c.debe)});return{duplicado:du,filas}}}}));
+}
+function saveToto(id,datos){const o=totoDatos(datos,id);delete o.pagos;delete o.pagado;try{if(id){const x=S.toto.find(v=>v.id===id);if(!x)return;if(!Array.isArray(x.pagos)){x.pagos=totoPagosDe(x,totoCalc(x).neto);delete x.pagado}Object.assign(x,o)}else S.toto.push({id:uid(),...o,pagos:[]});F.totoM=o.fecha.slice(0,7);F.totoD=o.fecha;done('Día guardado')}catch(e){console.error(e);toast('No se pudo guardar: '+(e&&e.message||e))}}
+
 function totoFix(x){if(!Array.isArray(x.pagos)){x.pagos=totoPagosDe(x,totoCalc(x).neto)}delete x.pagado;return x}
 /* check: pagó todo (agrega lo que faltaba) / destildar: borra los pagos de ese día */
 function totoPago(id,v){const x=S.toto.find(t=>t.id===id);if(!x)return;totoFix(x);const c=totoCalc(x);
   if(v){if(c.debe!==0)x.pagos.push({f:hoy(),m:c.debe})}else x.pagos=[];save();toast(v?'Marcado como pagado completo':'Pagos de ese día quitados');rerender()}
-function openTotoPago(id){const x=S.toto.find(t=>t.id===id);if(!x)return;const c=totoCalc(x);
-  modal(`<h2>Pago parcial · ${fd(x.fecha)}</h2><p class="mu small">Toto Ortega</p>
-  <div class="card" style="padding:12px 14px"><div class="list"><div><span>Tiene que pagar (total − ${TOTO_PCT}%)</span><b>${money(c.neto)}</b></div><div><span>Ya pagó</span><b>${money(c.pago)}</b></div><div><span><b>Debe</b></span>${debeTxt(c.debe)}</div></div></div>
-  ${c.P.length?`<span class="lbl" style="margin-top:12px;display:block">Pagos de este día</span><div class="list">${c.P.map((p,i)=>`<div><span>${fd(p.f)}</span><span class="acts" style="align-items:center"><b>${money(p.m)}</b>${Array.isArray(x.pagos)?`<button class="btn sm g" onclick="totoQuitarPago('${id}',${i})" aria-label="Quitar pago">✕</button>`:''}</span></div>`).join('')}</div>`:''}
-  <div class="row" style="margin-top:12px"><label class="f">Monto que paga ahora<input id="tp-m" class="money" inputmode="numeric" value=""></label><label class="f">Fecha<input type="date" id="tp-f" value="${hoy()}"></label></div>
-  <div class="mfoot"><span></span><div class="acts"><button class="btn" onclick="close_()">Cancelar</button><button class="btn p" onclick="saveTotoPago('${id}')">Guardar</button></div></div>`);setTimeout(()=>{const i=$('#tp-m');if(i)i.focus()},50)}
-function saveTotoPago(id){const x=S.toto.find(t=>t.id===id);if(!x)return;const m=num(val('tp-m'));if(!m)return toast('Poné el monto que pagó');
-  totoFix(x);const c=totoCalc(x);x.pagos.push({f:val('tp-f')||hoy(),m});done('Pago guardado')}
+function openTotoPago(id){const x=S.toto.find(t=>t.id===id);if(!x)return;const c=window.totoServidor?{neto:0,pago:0,debe:0,P:[]}:totoCalc(x);close_();window.dispatchEvent(new CustomEvent('agencia:pago-toto',{detail:{id,...totoPuente(),datos:x,fechaDia:fd(x.fecha),inicial:{fecha:hoy(),monto:''},neto:money(c.neto),pagado:money(c.pago),debe:c.debe>0?money(c.debe):c.debe<0?'+'+money(-c.debe):'—',pagos:c.P.map(p=>({fecha:fd(p.f),monto:money(p.m),quitable:Array.isArray(x.pagos)})),guardar:datos=>saveTotoPago(id,datos),quitar:i=>totoQuitarPago(id,i),cerrar:close_}}));}
+function saveTotoPago(id,datos){const x=S.toto.find(t=>t.id===id);if(!x)return;const m=num(datos.monto);if(!m)return toast('Poné el monto que pagó');totoFix(x);x.pagos.push({f:datos.fecha||hoy(),m});done('Pago guardado')}
+
 function totoQuitarPago(id,i){const x=S.toto.find(t=>t.id===id);if(!x||!Array.isArray(x.pagos))return;x.pagos.splice(i,1);save();toast('Pago quitado');rerender();openTotoPago(id)}
-function pdfToto(){const PP=totoPer();const L=PP.L.sort((a,b)=>a.fecha.localeCompare(b.fecha));if(!L.length)return toast('No hay días para exportar');
-  const per=PP.tit;
-  const head=['Fecha',...TOTO_J.map(([,t])=>t),'Total',TOTO_PCT+'%','Total − '+TOTO_PCT+'%','Premios','Premios agencia (Ema)','Total general','Pagó','Debe'];
+function pdfToto(procesado){
+  let per,head,body,foot,res,archivo;
+  if(procesado){({per,head,body,foot,res,archivo}=procesado)}else{const PP=totoPer();const L=PP.L.sort((a,b)=>a.fecha.localeCompare(b.fecha));if(!L.length)return toast('No hay días para exportar');
+  per=PP.tit;
+  head=['Fecha',...TOTO_J.map(([,t])=>t),'Total',TOTO_PCT+'%','Total − '+TOTO_PCT+'%','Premios','Premios agencia (Ema)','Total general','Pagó','Debe'];
   const T={total:0,com:0,neto:0,prem:0,premAg:0,gral:0,pago:0,debe:0},J={};TOTO_J.forEach(([k])=>J[k]=0);
-  const body=L.map(x=>{const c=totoCalc(x);for(const k in T)T[k]+=c[k];TOTO_J.forEach(([k])=>J[k]+=+x[k]||0);
+  body=L.map(x=>{const c=totoCalc(x);for(const k in T)T[k]+=c[k];TOTO_J.forEach(([k])=>J[k]+=+x[k]||0);
     return[fd(x.fecha),...TOTO_J.map(([k])=>(x[k]?pm(x[k]):'—')+(totoConcDe(x,k)?'\nN° '+totoConcDe(x,k):'')),pm(c.total),pm(c.com),pm(c.neto),c.prem?pm(c.prem):'—',c.premAg?pm(c.premAg):'—',pm(c.gral),c.pago?pm(c.pago):'—',c.debe>0?pm(c.debe):c.debe<0?'+'+pm(-c.debe):'—']});
-  const foot=['Total',...TOTO_J.map(([k])=>pm(J[k])),pm(T.total),pm(T.com),pm(T.neto),pm(T.prem),pm(T.premAg),pm(T.gral),'',''];
-  const res=[`Total jugado ${pm(T.total)}`,`${TOTO_PCT}% ${pm(T.com)}`,`Total − ${TOTO_PCT}% ${pm(T.neto)}`,`Premios ${pm(T.prem)}`,`Total general ${pm(T.gral)}`,`Me pagó ${pm(T.pago)}`,`Me debe ${pm(Math.max(0,T.debe))}`];
-  const archivo=`Toto_Ortega_${PP.key}.pdf`;
+  foot=['Total',...TOTO_J.map(([k])=>pm(J[k])),pm(T.total),pm(T.com),pm(T.neto),pm(T.prem),pm(T.premAg),pm(T.gral),'',''];
+  res=[`Total jugado ${pm(T.total)}`,`${TOTO_PCT}% ${pm(T.com)}`,`Total − ${TOTO_PCT}% ${pm(T.neto)}`,`Premios ${pm(T.prem)}`,`Total general ${pm(T.gral)}`,`Me pagó ${pm(T.pago)}`,`Me debe ${pm(Math.max(0,T.debe))}`];
+  archivo=`Toto_Ortega_${PP.key}.pdf`;
+  }
   (async()=>{toast('Armando el PDF…');
   try{if(!window.jspdf)await loadJs('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js');
       if(!window.jspdf.jsPDF.API.autoTable)await loadJs('https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js')}
@@ -1309,6 +1193,7 @@ async function pdfLista(titulo,sub,head,body,tot,archivo,colR){toast('Armando el
     didParseCell:d=>{if(d.section==='body'&&d.column.index===est)d.cell.styles.textColor=String(d.cell.raw).startsWith('Debe')?[179,48,42]:[14,107,79]}});
   const n=doc.getNumberOfPages();for(let i=1;i<=n;i++){doc.setPage(i);doc.setFontSize(8);doc.setTextColor(130);doc.text(`Página ${i} de ${n}`,W-14,290,{align:'right'})}
   doc.save(archivo);toast('PDF descargado')}
+function pdfLotServidor(datos){const nombre=plain(datos.nombre),fecha=datos.fecha,V=datos.filas;pdfLista('Lotería · '+nombre,'Sorteo del '+fd(fecha)+(FILTXT[F.gf||'todos']||''),['N°','Socio','Fracciones','Importe','Estado'],V,[V.length+' número'+(V.length===1?'':'s'),'Cobrado '+datos.cobrado,'Falta cobrar '+datos.falta],'Loteria_'+nombre.replace(/[^\wáéíóúñÁÉÍÓÚÑ ]+/g,'').trim().replace(/\s+/g,'_')+'_'+fecha+'.pdf',[3])}
 function pdfLot(){const s=so(F.so)||sorteoAct();if(!s)return;const V=S.lot.filter(l=>l.soId===s.id).sort(byNum).filter(v=>gPass(v.pagado));const imp=v=>v.frac*v.precio;
   pdfLista(`Lotería · ${plain(s.nombre)}`,`Sorteo del ${fd(s.fecha)}${FILTXT[F.gf||'todos']}`,['N°','Socio','Fracciones','Importe','Estado'],
     V.map(v=>[String(v.numero),sname(v.sid),plain(fracTxt(v)),pm(imp(v)),v.pagado?'Pagado':v.abono>0?`Debe ${pm(falt(v,imp(v)))} (pagó ${pm(v.abono)})`:'Debe']),
@@ -1342,13 +1227,12 @@ async function salir(){
   V='inicio';
   close_();
 
-  $('#panel-legacy').replaceChildren();
   window.dispatchEvent(new CustomEvent('agencia:socios',{detail:null}));
   publicarCheques();
   publicarAjustes();
   publicarActividad();
   publicarSeguros();
-  $('#side').replaceChildren();
+  sidebar();
   try{
     await window.agencia.salir();
     showLogin();
@@ -1375,6 +1259,7 @@ function editPayment(k,id){
   if(!jugada)return;
   abrirPago({
     clave:k+'|'+id,titulo:'Editar pago',fecha:jugada.fpago,
+    loteriaOperacion:k==='lot'?{id,puente:loteriaPuente()}:undefined,
     medio:jugada.medio,detalle:jugada.det,textoGuardar:'Guardar',
     guardar:(fecha,medio,detalle)=>{
       Object.assign(jugada,{fpago:fecha,medio,det:detalle});
@@ -1388,51 +1273,24 @@ function del(k,id){if(!confirm('¿Eliminar?'))return;let lib=0;{const kk=k==='se
   if(x&&['seg','rifa','q6','lot','quiniela'].includes(kk)){const n=kk==='seg'?x.cuotas.length:kk==='rifa'?x.pagos.length:0;
     (n?Array.from({length:n},(_,i)=>[kk,id,i]):[[kk,id]]).forEach(ref=>{lib+=liberarDeCobros(ref,false)})}}
   if(lib)setTimeout(()=>toast(`Lo que ya había pagado (${money(lib)}) quedó como saldo a favor`),2500);if(k==='q6'){const j=S.q6.find(x=>x.id===id);if(j)S.q6skip.push(j.sid+'|'+j.fecha)}S[k]=S[k].filter(x=>x.id!==id);done('Eliminado')}
-function modal(h){closeCal();$('#modal').innerHTML=h;$('#ov').hidden=false;enh($('#modal'));pgDet()}
 const fmtN=v=>{if(v===''||v===null||v===undefined)return'';const n=typeof v==='number'?v:num(v);return redondear(n).toLocaleString('es-AR',{maximumFractionDigits:2,minimumFractionDigits:Math.round(n*100)%100?2:0})};
-function formatoImporteEntrada(v){const limpio=String(v).replace(/[^\d,]/g,'');if(!limpio)return'';const pos=limpio.indexOf(','),entero=(pos<0?limpio:limpio.slice(0,pos)).replace(/^0+(?=\d)/,'')||'0';return Number(entero).toLocaleString('es-AR')+(pos<0?'':','+limpio.slice(pos+1).replace(/,/g,'').slice(0,2))}
-document.addEventListener('input',e=>{const i=e.target;if(i.classList&&i.classList.contains('money')){const antes=i.value,pos=i.selectionStart??antes.length;const relevantes=antes.slice(0,pos).replace(/[^\d,]/g,'').length;i.value=formatoImporteEntrada(antes);let cursor=0,cont=0;while(cursor<i.value.length&&cont<relevantes){if(/[\d,]/.test(i.value[cursor]))cont++;cursor++}try{i.setSelectionRange(cursor,cursor)}catch(_){}}});
-document.addEventListener('blur',e=>{const i=e.target;if(i.classList&&i.classList.contains('money'))i.value=fmtN(i.value)},true);
-const CAL_ICON='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>';
-function enh(root){root.querySelectorAll('input.money').forEach(i=>{if(!i.dataset.moneyReady){const raw=i.value;i.value=fmtN(/^\d+(?:\.\d+)?$/.test(raw)?Number(raw):raw);i.dataset.moneyReady='1'}i.inputMode='decimal'});
-  root.querySelectorAll('input[type=date]').forEach(inp=>{const inl=!inp.closest('label.f');inp.type='hidden';const w=document.createElement('span');w.className='dpw';w.style.display=inl?'inline-block':'block';
-    inp.parentNode.insertBefore(w,inp);w.appendChild(inp);const b=document.createElement('button');b.type='button';b.className='dp'+(inl?' inl':'');w.appendChild(b);
-    inp._upd=()=>{b.innerHTML=CAL_ICON+'<span>'+(inp.dataset.label?inp.dataset.label:inp.value?DIAS[parse(inp.value).getDay()]+' '+fd(inp.value):'Elegir fecha')+'</span>'};inp._upd();
-    b.onclick=e=>{e.preventDefault();e.stopPropagation();openCal(w,inp)}})}
-let calEl=null,calAnchor=null;
-function closeCal(){if(calEl){calEl.remove();calEl=null}calAnchor=null}
-function openCal(w,inp){const was=calEl&&calAnchor===w;closeCal();if(was)return;let ym=(inp.value||hoy()).slice(0,7);
-  const c=document.createElement('div');c.className='cal';c.setAttribute('role','group');c.setAttribute('aria-label','Elegir fecha');c.onclick=e=>{e.stopPropagation();if(e.target.closest('button'))e.preventDefault()};document.body.appendChild(c);calEl=c;calAnchor=w;
-  const pick=v=>{inp.value=v;inp._upd();closeCal();inp.dispatchEvent(new Event('change'))};
-  const draw=()=>{const[y,m]=ym.split('-').map(Number);const off=(new Date(y,m-1,1).getDay()+6)%7,dim=new Date(y,m,0).getDate();
-    let h=`<div class="ch2"><button type="button" class="btn sm g" data-n="-1" aria-label="Mes anterior">‹</button><div class="cal-selects"><select class="cal-month" aria-label="Mes">${MESES.map((mes,i)=>`<option value="${i+1}" ${i+1===m?'selected':''}>${mes}</option>`).join('')}</select><input class="cal-year" aria-label="Año" type="number" min="1" max="9999" value="${y}" inputmode="numeric"></div><button type="button" class="btn sm g" data-n="1" aria-label="Mes siguiente">›</button></div><div class="g">${['L','M','M','J','V','S','D'].map(d=>`<span>${d}</span>`).join('')}${'<i></i>'.repeat(off)}`;
-    for(let d=1;d<=dim;d++){const iso=`${y}-${pad(m)}-${pad(d)}`;h+=`<button type="button" data-d="${iso}" class="${iso===inp.value?'sel':''} ${iso===hoy()?'hoy':''}">${d}</button>`}
-    c.innerHTML=h+`</div><div class="ft"><button type="button" class="btn sm" data-d="${hoy()}">Hoy</button><button type="button" class="btn sm" data-d="${addDays(hoy(),-1)}">Ayer</button><button type="button" class="btn sm g" data-x="1" style="margin-left:auto">Cerrar</button></div>`;
-    c.querySelectorAll('[data-n]').forEach(b=>b.onclick=e=>{e.preventDefault();e.stopPropagation();ym=addMonths(ym+'-01',+b.dataset.n).slice(0,7);draw()});
-    c.querySelector('.cal-month').onchange=e=>{ym=ym.slice(0,4)+'-'+pad(+e.target.value);draw()};
-    c.querySelector('.cal-year').onchange=e=>{const year=+e.target.value;if(Number.isInteger(year)&&year>=1&&year<=9999){ym=String(year).padStart(4,'0')+ym.slice(4);draw()}};
-    c.querySelectorAll('[data-d]').forEach(b=>b.onclick=e=>{e.preventDefault();e.stopPropagation();pick(b.dataset.d)});c.querySelector('[data-x]').onclick=e=>{e.preventDefault();e.stopPropagation();closeCal()}};
-  draw();const a=w.getBoundingClientRect(),r=c.getBoundingClientRect(),gap=6,edge=8;const vw=document.documentElement.clientWidth||window.innerWidth,vh=window.innerHeight;const below=vh-a.bottom-gap-edge,above=a.top-gap-edge;const top=below>=r.height?a.bottom+gap:above>=r.height?a.top-gap-r.height:Math.max(edge,Math.min(vh-r.height-edge,below>=above?a.bottom+gap:a.top-gap-r.height));c.style.left=Math.max(edge,Math.min(a.left,vw-r.width-edge))+'px';c.style.top=Math.max(edge,top)+'px'}
-window.addEventListener('resize',closeCal);
-document.addEventListener('scroll',e=>{if(calEl&&!calEl.contains(e.target))closeCal()},true);
-document.addEventListener('keydown',e=>{if(e.key==='Escape'&&calEl){e.preventDefault();e.stopImmediatePropagation();const a=calAnchor;closeCal();a?.querySelector('.dp')?.focus()}},true);
-document.addEventListener('click',closeCal);
 function close_(){
-  $('#ov').hidden=true;
   window.dispatchEvent(new CustomEvent('agencia:editar-socio',{detail:null}));
   window.dispatchEvent(new CustomEvent('agencia:editar-sorteo',{detail:null}));
   window.dispatchEvent(new CustomEvent('agencia:editar-seguro',{detail:null}));
+  window.dispatchEvent(new CustomEvent('agencia:editar-quini',{detail:null}));
+  window.dispatchEvent(new CustomEvent('agencia:plan-quini',{detail:null}));
+  window.dispatchEvent(new CustomEvent('agencia:especial-quini',{detail:null}));
+  window.dispatchEvent(new CustomEvent('agencia:editar-quiniela',{detail:null}));
+  window.dispatchEvent(new CustomEvent('agencia:editar-venta',{detail:null}));
+  window.dispatchEvent(new CustomEvent('agencia:editar-rifa',{detail:null}));
+  window.dispatchEvent(new CustomEvent('agencia:editar-toto',{detail:null}));
+  window.dispatchEvent(new CustomEvent('agencia:whatsapp',{detail:null}));
+  window.dispatchEvent(new CustomEvent('agencia:pago-toto',{detail:null}));
   window.dispatchEvent(new CustomEvent('agencia:editar-pago',{detail:null}));
   window.dispatchEvent(new CustomEvent('agencia:registrar-cobro',{detail:null}));
 }
 /* Guarda el formulario y abre el cobro de lo que se acaba de cargar */
-function guardarYCobrar(col,fn){const antes=new Set(S[col].map(x=>x.id));const editId=(document.querySelector('#modal [onclick*="del(\''+col+'\'"]')||{}).getAttribute?.('onclick')?.match(/'([^']+)'\)$/)?.[1];
-  fn();if(!$('#ov').hidden)return;   // no se guardó (falta algún dato)
-  const nuevos=S[col].filter(x=>!antes.has(x.id));const x=nuevos[0]||S[col].find(v=>v.id===editId);if(!x)return;
-  const t=col==='seguros'?'seg':col==='rifas'?'rifa':col;
-  let key=null;if(nuevos.length<=1){if(t==='seg'){const i=x.cuotas.findIndex(c=>!c.pago&&!c.anulado);key=i<0?null:`seg|${x.id}|${i}`}else if(t==='rifa'){const i=x.pagos.findIndex(p=>!p);key=i<0?null:`rifa|${x.id}|${i}`}else key=x.pagado?null:`${t}|${x.id}`}
-  openCobro(x.sid,key)}
 function done(t){save();close_();toast(t);rerender()}
-let tT;function toast(t){const e=$('#toast');e.textContent=t;e.classList.add('on');clearTimeout(tT);tT=setTimeout(()=>e.classList.remove('on'),2400)}
-document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('#ov').hidden)close_()});
+let tT;function toast(t){window.dispatchEvent(new CustomEvent('agencia:aviso',{detail:String(t)}));clearTimeout(tT);tT=setTimeout(()=>window.dispatchEvent(new CustomEvent('agencia:aviso',{detail:null})),2400)}
 window.cargarAgencia=cargarAgencia;

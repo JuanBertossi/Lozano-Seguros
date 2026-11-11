@@ -3,10 +3,19 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm } from 'react-hook-form';
 import { usePanelEvent } from '../../../shared/hooks/usePanelEvent';
 import { socioSchema, type SocioInput } from '../socio.schema';
+import { useOperacionSocioSegura, useProximoNumeroSocio } from '../hooks/useSocios';
+import type { ResultadoSocio } from '../api/socios.service';
+import type { DatosAgencia } from '../../../shared/lib/supabase.service';
+
+const usarSql = import.meta.env.VITE_SOCIOS_SQL === 'true';
 
 interface EdicionSocio {
   id: string | null;
   inicial: SocioInput;
+  obtenerRevision?: () => number;
+  bloquear?: () => void;
+  desbloquear?: () => void;
+  sincronizar?: (datos: DatosAgencia, resultado: ResultadoSocio) => void;
   guardar: (datos: SocioInput) => void;
   eliminar: () => void;
   cerrar: () => void;
@@ -18,26 +27,61 @@ const boton = 'cursor-pointer rounded-[9px] border border-solid border-[var(--ln
 
 function FormularioSocio({ edicion }: { edicion: EdicionSocio }) {
   const dialogo = useRef<HTMLDialogElement>(null);
-  const { register, handleSubmit, formState: { errors } } = useForm<SocioInput>({
+  const { register, handleSubmit, setValue, getFieldState, formState: { errors } } = useForm<SocioInput>({
     resolver: zodResolver(socioSchema),
     defaultValues: edicion.inicial,
+  });
+  const puenteCompleto = Boolean(edicion.obtenerRevision && edicion.bloquear && edicion.desbloquear && edicion.sincronizar);
+  let revision: number | null = null;
+  try { if (usarSql && puenteCompleto) revision = edicion.obtenerRevision!(); } catch { /* Esperar guardado pendiente. */ }
+  const proximo = useProximoNumeroSocio(usarSql && !edicion.id ? revision : null);
+  const operacion = useOperacionSocioSegura({
+    obtenerRevision: () => { if (!edicion.obtenerRevision) throw new Error('La conexión de socios todavía no está disponible.'); return edicion.obtenerRevision(); },
+    bloquear: () => { if (!edicion.bloquear) throw new Error('La conexión de socios todavía no está disponible.'); edicion.bloquear(); },
+    desbloquear: () => edicion.desbloquear?.(),
+    sincronizar: (datos, resultado) => { if (!edicion.sincronizar) throw new Error('No se pudo actualizar la pantalla.'); edicion.sincronizar(datos, resultado); },
   });
 
   useEffect(() => {
     dialogo.current?.showModal();
   }, []);
+  useEffect(() => {
+    if (usarSql && !edicion.id && proximo.data !== undefined && !getFieldState('nro').isDirty) setValue('nro', proximo.data);
+  }, [edicion.id, getFieldState, proximo.data, setValue]);
+
+  function guardar(datos: SocioInput) {
+    if (!usarSql) { edicion.guardar(datos); return; }
+    const comunes = { nombre: datos.nombre, nro: datos.nro, tel: datos.tel, dir: datos.dir };
+    if (edicion.id) {
+      const favor = datos.favor ? Number(datos.favor.replace(/\./g, '').replace(',', '.')) : 0;
+      void operacion.enviar({ p_accion: 'editar', p_id: edicion.id, p_datos: { ...comunes, favor, archivado: datos.archivado } });
+    } else void operacion.enviar({ p_accion: 'crear', p_id: null, p_datos: comunes });
+  }
+
+  function eliminar() {
+    if (!usarSql) { edicion.eliminar(); return; }
+    if (edicion.id && confirm('¿Eliminar el socio y todo lo suyo (seguros, jugadas, números, rifas)? Si solo dejó de ser socio, mejor archivalo.'))
+      void operacion.enviar({ p_accion: 'eliminar', p_id: edicion.id, p_datos: {} });
+  }
 
   return (
     <dialog ref={dialogo} aria-labelledby="titulo-edicion-socio" id="socio-dialog"
       className="m-auto max-h-[90vh] w-[calc(100%-28px)] max-w-[700px] overflow-auto rounded-2xl border-0 bg-[var(--sf)] p-0 text-[var(--ink)] shadow-2xl backdrop:bg-[#0a0c0f73]"
-      onCancel={(event) => { event.preventDefault(); edicion.cerrar(); }}
+      onCancel={(event) => { event.preventDefault(); if (!operacion.bloqueado) edicion.cerrar(); }}
       onClick={(event) => {
-        if (event.target === event.currentTarget) {
+        if (!operacion.bloqueado && event.target === event.currentTarget) {
           const rect = event.currentTarget.getBoundingClientRect();
           if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) edicion.cerrar();
         }
       }}>
-      <form onSubmit={handleSubmit(edicion.guardar)} noValidate>
+      <div className="px-6">
+        {usarSql && !puenteCompleto && <p role="alert" className="text-sm text-[var(--bad)]">La conexión de socios todavía no está disponible.</p>}
+        {usarSql && proximo.error instanceof Error && <p role="alert" className="text-sm text-[var(--bad)]">{proximo.error.message}</p>}
+        {usarSql && proximo.isError && <button type="button" className={boton} onClick={() => void proximo.refetch()}>Reintentar consulta</button>}
+        {usarSql && operacion.error && <p role="alert" className="text-sm text-[var(--bad)]">{operacion.error}</p>}
+        {usarSql && operacion.bloqueado && !operacion.procesando && <button type="button" className={boton} onClick={() => void operacion.enviar()}>Reintentar operación</button>}
+      </div>
+      <form inert={usarSql && operacion.bloqueado} onSubmit={handleSubmit(guardar)} noValidate>
         <div className="grid gap-3.5 px-6 pt-[22px] pb-5 max-[820px]:px-4">
           <h2 id="titulo-edicion-socio" className="text-[22px] font-semibold">{edicion.id ? 'Editar socio' : 'Nuevo socio'}</h2>
           <div className="grid grid-cols-2 gap-3 max-[560px]:grid-cols-1">
@@ -65,10 +109,10 @@ function FormularioSocio({ edicion }: { edicion: EdicionSocio }) {
           ) : <p className="text-[14.5px] text-[var(--mu)]">Después de guardarlo, desde su ficha le agregás seguros, Quini 6, lotería, quiniela o rifa.</p>}
         </div>
         <div className="flex flex-wrap items-center justify-between gap-2 border-t border-solid border-[var(--ln)] px-6 py-3 max-[820px]:px-4">
-          <div>{edicion.id && <button type="button" className={boton + ' text-[var(--bad)]'} onClick={edicion.eliminar}>Eliminar</button>}</div>
+          <div>{edicion.id && <button type="button" disabled={usarSql && !puenteCompleto} className={boton + ' text-[var(--bad)] disabled:opacity-40'} onClick={eliminar}>Eliminar</button>}</div>
           <div className="flex gap-2">
             <button type="button" className={boton} onClick={edicion.cerrar}>Cancelar</button>
-            <button type="submit" className="cursor-pointer rounded-[9px] border border-solid border-[var(--ac)] bg-[var(--ac)] px-4 py-2.5 text-[15.5px] font-medium text-white hover:brightness-110">Guardar</button>
+            <button type="submit" disabled={usarSql && (!puenteCompleto || revision === null || (!edicion.id && (proximo.isFetching || proximo.isError || proximo.data === undefined)))} className="cursor-pointer rounded-[9px] border border-solid border-[var(--ac)] bg-[var(--ac)] px-4 py-2.5 text-[15.5px] font-medium text-white hover:brightness-110 disabled:opacity-40">Guardar</button>
           </div>
         </div>
       </form>

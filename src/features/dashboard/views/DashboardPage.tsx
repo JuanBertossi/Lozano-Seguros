@@ -1,23 +1,19 @@
 import type { ReactNode } from 'react';
 import { NavegacionPanel } from '../components/NavegacionPanel';
+import { EstadoGuardado } from '../components/EstadoGuardado';
+import { AvisosPanel } from '../components/AvisosPanel';
 
-export function DashboardPage({ children }: { children: ReactNode }) {
+export function DashboardPage({ children, encabezado }: { children: ReactNode; encabezado?: ReactNode }) {
   return (
     <>
       <aside id="side"><NavegacionPanel /></aside>
       <main id="main">
         <div id="panel-topbar" />
-        <div id="panel-legacy" />
+        {encabezado}
         {children}
       </main>
-      <div className="ov" id="ov" hidden onClick={(event) => {
-        if (event.target === event.currentTarget) event.currentTarget.hidden = true;
-      }}>
-        <div className="modal" id="modal" role="dialog" aria-modal="true" />
-      </div>
-      <div className="toast" id="toast" role="status" />
-      <div className="snack" id="snack" role="status" />
-      <div id="estado-guardado" className="lgbox fixed right-4 bottom-4 z-[90] !px-4 !py-3" role="status" hidden />
+      <AvisosPanel />
+      <EstadoGuardado />
     </>
   );
 }
