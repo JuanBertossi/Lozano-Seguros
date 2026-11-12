@@ -1,9 +1,16 @@
--- INCOMPLETO: no ejecutar. Existen procedimientos de cobros, saldos y anulaciones,
--- pero falta completar su integración, validación y el resto de los flujos.
--- La distribución de 64 o más conceptos con comparación no transitiva todavía
--- requiere portar TimSort del navegador; por ahora se rechaza expresamente.
+-- Procedimientos del panel (cobros, saldos, anulaciones y todos los flujos de la maqueta).
+-- Requiere haber ejecutado 00-lozano-supabase.sql y 01-actualizar-roles.sql.
+-- Después ejecutar 03-panel.sql y, al final, 04-permisos.sql.
+-- El ordenamiento acepta 64 o más conceptos con fechas coherentes. El cálculo
+-- rechaza únicamente entradas inconsistentes que producen un comparador no
+-- transitivo; las fechas vencidas y futuras válidas no pueden solaparse.
 -- Funciones de cálculo aisladas para comparar con el maquetado.
 begin;
+
+-- Una operación sin cambios conserva la revisión. La unicidad sigue vigente
+-- para las operaciones que sí avanzan el estado y sus UUID permanecen trazables.
+alter table agencia.operaciones drop constraint if exists operaciones_revision_key;
+create unique index if not exists operaciones_revision_mutacion_idx on agencia.operaciones(revision) where revision>revision_anterior;
 
 create or replace function agencia.cuotas_seguro(
   p_ingreso date, p_plan text, p_valor numeric, p_anteriores jsonb default '[]'::jsonb
@@ -302,6 +309,7 @@ declare
   reduccion numeric;
   nuevo_sobrante numeric;
   nuevo_saldo numeric;
+  detalle_normalizado jsonb;
 begin
   if jsonb_typeof(p_socio) is distinct from 'object'
      or jsonb_typeof(p_cobro) is distinct from 'object'
@@ -327,10 +335,11 @@ begin
   end if;
   nuevo_sobrante := greatest(0,sobrante_anterior-reduccion);
   nuevo_saldo := greatest(0,saldo_anterior+nuevo_sobrante-sobrante_anterior);
+  detalle_normalizado := agencia.seguro_detalle_pago(p_medio,p_detalle,p_cobro->'det');
   return jsonb_build_object(
     'socio',p_socio || jsonb_build_object('favor',nuevo_saldo),
     'cobro',p_cobro || jsonb_build_object('monto',p_monto,'fecha',p_fecha,
-      'medio',p_medio,'det',p_detalle,'quedo',nuevo_sobrante)
+      'medio',p_medio,'det',coalesce(detalle_normalizado,'null'::jsonb),'quedo',nuevo_sobrante)
   );
 end $$;
 
@@ -683,32 +692,57 @@ revoke all on function agencia.cuotas_seguro(date,text,numeric,jsonb),
   agencia.cuota_rifa(numeric,integer,integer), agencia.toto_calcular(jsonb)
   from public, anon, authenticated;
 -- Renovación automática de Quini según los días y sorteos especiales configurados.
+-- La función interna permite generar en la misma transacción que modifica
+-- planes, precios o sorteos, sin registrar una operación artificial adicional.
+create or replace function agencia.generar_quini_pendientes(p_perfil agencia.perfiles)
+returns integer language plpgsql set search_path='' as $$
+declare
+ configuracion jsonb; socio record; fecha date; hoy date:=(current_timestamp at time zone 'America/Argentina/Buenos_Aires')::date;
+ desde date; dias jsonb; dias_generales jsonb; especial jsonb; precio numeric; cantidad integer;
+ clave_nueva text; posicion_nueva bigint; generadas integer:=0;
+begin
+ select datos into strict configuracion from agencia.configuracion;
+ dias_generales:=coalesce(configuracion->'q6Dias','[]'::jsonb);
+ if jsonb_typeof(dias_generales)<>'array' then raise exception 'Días de sorteo inválidos' using errcode='22023'; end if;
+ select coalesce(max(posicion),0) into posicion_nueva from agencia.quini_jugadas;
+ for socio in select datos from agencia.socios order by posicion loop
+  if not coalesce((socio.datos->>'activo')::boolean,false) or not coalesce((socio.datos->'q6'->>'auto')::boolean,false) then continue; end if;
+  dias:=coalesce(socio.datos->'q6'->'dias','[]'::jsonb);
+  if jsonb_typeof(dias)<>'array' then raise exception 'Días de socio inválidos' using errcode='22023'; end if;
+  if jsonb_array_length(dias)=0 then continue; end if;
+  desde:=coalesce(nullif(socio.datos->'q6'->>'desde','')::date,hoy);
+  cantidad:=coalesce(nullif((socio.datos->'q6'->>'cant')::integer,0),1);
+  for fecha in select g::date from generate_series(desde::timestamp,hoy::timestamp,interval '1 day') g loop
+   select datos into especial from agencia.quini_sorteos_especiales where datos->>'fecha'=fecha::text order by posicion limit 1;
+   if not (dias_generales @> jsonb_build_array(extract(dow from fecha)::integer) or especial is not null) then continue; end if;
+   if not (dias @> jsonb_build_array(extract(dow from fecha)::integer) or not dias_generales @> jsonb_build_array(extract(dow from fecha)::integer)) then continue; end if;
+   if exists(select 1 from agencia.quini_jugadas where datos->>'sid'=socio.datos->>'id' and datos->>'fecha'=fecha::text)
+    or exists(select 1 from agencia.quini_exclusiones where datos #>> '{}'=(socio.datos->>'id')||'|'||fecha::text) then continue; end if;
+   precio:=case when especial is not null then (especial->>'precio')::numeric else (configuracion->>'q6Precio')::numeric end;
+   if precio is null or precio<0 or cantidad<1 then raise exception 'Precio o cantidad de Quini inválido' using errcode='22023'; end if;
+   clave_nueva:=replace(gen_random_uuid()::text,'-','');posicion_nueva:=posicion_nueva+1;
+   insert into agencia.quini_jugadas(clave,posicion,datos) values(clave_nueva,posicion_nueva,jsonb_build_object('id',clave_nueva,'sid',socio.datos->>'id','fecha',fecha,'monto',precio*cantidad,'pagado',false,'auto',true,'ts','','por','auto'));
+   insert into agencia.actividad(actor,nombre_actor,coleccion,clave,accion) values(p_perfil.id,p_perfil.nombre,'q6',clave_nueva,'Creó');
+   generadas:=generadas+1;
+  end loop;
+ end loop;
+ return generadas;
+end $$;
+revoke all on function agencia.generar_quini_pendientes(agencia.perfiles) from public,anon,authenticated;
+
 create or replace function public.agencia_generar_quini(p_revision bigint, p_operacion uuid)
 returns bigint language plpgsql security definer set search_path = '' as $$
 declare
   perfil agencia.perfiles;
   anterior agencia.operaciones;
   revision_actual bigint;
-  configuracion jsonb;
-  socio record;
-  fecha date;
-  hoy date := (current_timestamp at time zone 'America/Argentina/Buenos_Aires')::date;
-  desde date;
-  dias jsonb;
-  dias_generales jsonb;
-  especial jsonb;
-  precio numeric;
-  cantidad integer;
-  clave_nueva text;
-  posicion_nueva bigint;
-  generadas integer := 0;
   huella_actual text;
 begin
   perfil := agencia.exigir_perfil();
   if p_revision is null or p_operacion is null then
     raise exception 'Revisión u operación inválida' using errcode='22023';
   end if;
-  select revision, datos into strict revision_actual, configuracion from agencia.configuracion for update;
+  select revision into strict revision_actual from agencia.configuracion for update;
   huella_actual := encode(sha256(convert_to('generar_quini','UTF8')), 'hex');
   select * into anterior from agencia.operaciones where id=p_operacion;
   if found then
@@ -720,36 +754,9 @@ begin
   if revision_actual <> p_revision then
     raise exception 'Los datos cambiaron. Volvé a cargarlos antes de guardar.' using errcode='40001';
   end if;
-  dias_generales := coalesce(configuracion->'q6Dias','[]'::jsonb);
-  if jsonb_typeof(dias_generales) <> 'array' then raise exception 'Días de sorteo inválidos' using errcode='22023'; end if;
-  select coalesce(max(posicion),0) into posicion_nueva from agencia.quini_jugadas;
-  for socio in select datos from agencia.socios order by posicion loop
-    if not coalesce((socio.datos->>'activo')::boolean,false)
-      or not coalesce((socio.datos->'q6'->>'auto')::boolean,false) then continue; end if;
-    dias := coalesce(socio.datos->'q6'->'dias','[]'::jsonb);
-    if jsonb_typeof(dias) <> 'array' then raise exception 'Días de socio inválidos' using errcode='22023'; end if;
-    if jsonb_array_length(dias)=0 then continue; end if;
-    desde := coalesce(nullif(socio.datos->'q6'->>'desde','')::date,hoy);
-    cantidad := coalesce(nullif((socio.datos->'q6'->>'cant')::integer,0),1);
-    for fecha in select g::date from generate_series(desde::timestamp,hoy::timestamp,interval '1 day') g loop
-      select datos into especial from agencia.quini_sorteos_especiales where datos->>'fecha'=fecha::text order by posicion limit 1;
-      if not (dias_generales @> jsonb_build_array(extract(dow from fecha)::integer) or especial is not null) then continue; end if;
-      if not (dias @> jsonb_build_array(extract(dow from fecha)::integer) or not dias_generales @> jsonb_build_array(extract(dow from fecha)::integer)) then continue; end if;
-      if exists(select 1 from agencia.quini_jugadas where datos->>'sid'=socio.datos->>'id' and datos->>'fecha'=fecha::text)
-        or exists(select 1 from agencia.quini_exclusiones where datos #>> '{}' = (socio.datos->>'id') || '|' || fecha::text) then continue; end if;
-      precio := case when especial is not null then (especial->>'precio')::numeric else (configuracion->>'q6Precio')::numeric end;
-      if precio is null or precio < 0 or cantidad < 1 then raise exception 'Precio o cantidad de Quini inválido' using errcode='22023'; end if;
-      clave_nueva := replace(gen_random_uuid()::text,'-','');
-      posicion_nueva := posicion_nueva+1;
-      insert into agencia.quini_jugadas(clave,posicion,datos) values(clave_nueva,posicion_nueva,jsonb_build_object(
-        'id',clave_nueva,'sid',socio.datos->>'id','fecha',fecha,'monto',precio*cantidad,
-        'pagado',false,'auto',true,'ts',clock_timestamp(),'por','auto'));
-      insert into agencia.actividad(actor,nombre_actor,coleccion,clave,accion)
-        values(perfil.id,perfil.nombre,'q6',clave_nueva,'Creó');
-      generadas := generadas+1;
-    end loop;
-  end loop;
-  update agencia.configuracion set revision=revision+1 returning revision into revision_actual;
+  if agencia.generar_quini_pendientes(perfil)>0 then
+    update agencia.configuracion set revision=revision+1 returning revision into revision_actual;
+  end if;
   insert into agencia.operaciones(id,actor,revision,revision_anterior,huella)
     values(p_operacion,perfil.id,revision_actual,p_revision,huella_actual);
   return revision_actual;
@@ -1299,25 +1306,37 @@ end $$;
 
 -- Estima cada concurso usando la fila válida más cercana y los días de sorteo
 -- configurados; respeta el orden de las filas cuando comparten fecha.
-create or replace function agencia.toto_concursos(p_fecha date,p_excluir text default null)
+-- Planillas que tienen cargado algún número de concurso: sirven de punto de partida para estimar los demás.
+-- Se arma una sola vez por consulta; la estimación por día trabaja sobre esta lista chica y no sobre todas las planillas.
+create or replace function agencia.toto_anclas(p_excluir text default null)
+returns jsonb language sql stable set search_path = '' as $$
+  select coalesce(jsonb_agg(jsonb_build_object('fecha',a.fecha,'posicion',a.posicion,'conc',a.conc) order by a.posicion),'[]'::jsonb)
+  from (
+    select x.datos->>'fecha' fecha,x.posicion,
+      (select jsonb_object_agg(k.juego,k.valor) from (
+        select j.juego,
+          case when coalesce(nullif(x.datos->'conc'->>j.juego,'')::numeric,0)>0 then (x.datos->'conc'->>j.juego)::integer
+               when j.juego='matutina' and coalesce(nullif(x.datos->>'concurso','')::numeric,0)>0 then (x.datos->>'concurso')::integer end valor
+        from unnest(array['previa','primera','matutina','vespertina','nocturna','turista','quini6','loto']) j(juego)
+      ) k where k.valor is not null) conc
+    from agencia.toto_planillas x where x.clave is distinct from p_excluir
+  ) a where a.conc is not null;
+$$;
+
+create or replace function agencia.toto_concursos_de(p_fecha date,p_anclas jsonb)
 returns jsonb language plpgsql stable set search_path = '' as $$
-declare k text; r record; cfg jsonb; dias jsonb; candidatos jsonb; valor integer; delta integer; salida jsonb:='{}';
+declare k text; r record; cfg jsonb; dias jsonb; valor integer; delta integer; salida jsonb:='{}';
 begin
   if p_fecha is null then raise exception 'Fecha inválida' using errcode='22023'; end if;
   select datos->'totoDias' into cfg from agencia.configuracion;
   foreach k in array array['previa','primera','matutina','vespertina','nocturna','turista','quini6','loto'] loop
     dias:=case when jsonb_typeof(cfg->k)='array' then cfg->k
       when k in ('quini6','loto') then '[0,3]'::jsonb else '[1,2,3,4,5,6]'::jsonb end;
-    select x.datos, (x.datos->>'fecha')::date fecha,
-      case when coalesce(nullif(x.datos->'conc'->>k,'')::numeric,0)>0 then (x.datos->'conc'->>k)::integer
-           when k='matutina' and coalesce(nullif(x.datos->>'concurso','')::numeric,0)>0 then (x.datos->>'concurso')::integer
-           else null end concurso
-      into r from agencia.toto_planillas x
-      where x.clave is distinct from p_excluir
-        and (coalesce(nullif(x.datos->'conc'->>k,'')::numeric,0)>0 or (k='matutina' and coalesce(nullif(x.datos->>'concurso','')::numeric,0)>0))
-      order by case when (x.datos->>'fecha')::date<=p_fecha then 0 else 1 end,
-        case when (x.datos->>'fecha')::date<=p_fecha then (x.datos->>'fecha')::date end desc,
-        case when (x.datos->>'fecha')::date>p_fecha then (x.datos->>'fecha')::date end asc, x.posicion
+    select (a->>'fecha')::date fecha,(a->'conc'->>k)::integer concurso into r
+      from jsonb_array_elements(p_anclas) a where a->'conc' ? k
+      order by case when (a->>'fecha')::date<=p_fecha then 0 else 1 end,
+        case when (a->>'fecha')::date<=p_fecha then (a->>'fecha')::date end desc,
+        case when (a->>'fecha')::date>p_fecha then (a->>'fecha')::date end asc,(a->>'posicion')::bigint
       limit 1;
     valor:=null;
     if found then
@@ -1332,6 +1351,11 @@ begin
   end loop;
   return salida;
 end $$;
+
+create or replace function agencia.toto_concursos(p_fecha date,p_excluir text default null)
+returns jsonb language sql stable set search_path = '' as $$
+  select agencia.toto_concursos_de(p_fecha,agencia.toto_anclas(p_excluir));
+$$;
 
 create or replace function public.agencia_toto_prever(p_revision bigint,p_fecha date,p_datos jsonb,p_id text default null)
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
@@ -1453,8 +1477,8 @@ revoke all on function public.agencia_toto_operar(bigint,uuid,text,text,jsonb) f
 create or replace function public.agencia_toto_listar(p_revision bigint,p_periodo text,p_valor text)
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
 declare
- rev bigint; r record; c jsonb; estimados jsonb; concursos jsonb; k text; n numeric;
- filas jsonb:='[]'::jsonb; juegos jsonb:='{}'::jsonb; totales jsonb:='{}'::jsonb;
+ rev bigint; r record; c jsonb; estimados jsonb; concursos jsonb; k text; n numeric; anclas jsonb;
+ filas jsonb; filas_a jsonb[]:='{}'; juegos jsonb:='{}'::jsonb; totales jsonb:='{}'::jsonb;
  campos text[]:=array['total','com','neto','prem','gral','pago','debe','premAg']; campo text; pagados integer:=0;
 begin
  perform agencia.exigir_perfil();
@@ -1467,11 +1491,12 @@ begin
  end if;
  foreach k in array array['previa','primera','matutina','vespertina','nocturna','turista','quini6','loto'] loop juegos:=juegos||jsonb_build_object(k,0); end loop;
  foreach campo in array campos loop totales:=totales||jsonb_build_object(campo,0); end loop;
+ anclas:=agencia.toto_anclas();
  for r in select t.clave,t.datos from agencia.toto_planillas t
    where p_periodo='todo' or (p_periodo='dia' and t.datos->>'fecha'=p_valor) or (p_periodo='mes' and left(t.datos->>'fecha',7)=p_valor)
    order by t.datos->>'fecha' desc,t.posicion loop
    c:=agencia.toto_calcular(r.datos);
-   estimados:=agencia.toto_concursos((r.datos->>'fecha')::date,r.clave); concursos:='{}'::jsonb;
+   estimados:=agencia.toto_concursos_de((r.datos->>'fecha')::date,anclas); concursos:='{}'::jsonb;
    foreach k in array array['previa','primera','matutina','vespertina','nocturna','turista','quini6','loto'] loop
      n:=coalesce(nullif(r.datos->'conc'->>k,'')::numeric,0);
      if n<=0 and k='matutina' then n:=coalesce(nullif(r.datos->>'concurso','')::numeric,0); end if;
@@ -1480,8 +1505,9 @@ begin
    end loop;
    foreach campo in array campos loop totales:=totales||jsonb_build_object(campo,coalesce((totales->>campo)::double precision,0)+coalesce((c->>campo)::double precision,0)); end loop;
    if (c->>'saldado')::boolean then pagados:=pagados+1; end if;
-   filas:=filas||jsonb_build_array(jsonb_build_object('id',r.clave,'datos',r.datos,'calculo',c,'concursos',concursos));
+   filas_a:=array_append(filas_a,jsonb_build_object('id',r.clave,'datos',r.datos,'calculo',c,'concursos',concursos));
  end loop;
+ filas:=coalesce(to_jsonb(filas_a),'[]'::jsonb);
  foreach k in array array['previa','primera','matutina','vespertina','nocturna','turista','quini6','loto'] loop
    juegos:=juegos||jsonb_build_object(k,agencia.toto_redondear((juegos->>k)::double precision));
  end loop;
@@ -1630,6 +1656,8 @@ begin
     insert into agencia.actividad(actor,nombre_actor,coleccion,clave,accion)
       values(perfil.id,perfil.nombre,'socios',clave_actual,case when p_accion='eliminar' then 'Eliminó' when creado then 'Creó' else 'Modificó' end);
   end if;
+  -- La maqueta vuelve a generar al refrescar tras crear, editar o reactivar.
+  perform agencia.generar_quini_pendientes(perfil);
   update agencia.configuracion set revision=revision+1 returning revision into rev;
   respuesta:=jsonb_build_object('revision',rev,'id',clave_actual,'nombre',registro->>'nombre','nro',coalesce(registro->>'nro',''));
   insert into agencia.operaciones(id,actor,revision,revision_anterior,huella,resultado)
@@ -1866,11 +1894,11 @@ begin
    ingreso:=(r.datos->>'ingreso')::date; venc:=(r.datos->>'venc')::date; dias:=venc-hoy;
    por_nombre:=''; mod_nombre:=''; autor:='';
    if coalesce(r.datos->>'por','')<>'' and r.datos->>'por'<>'auto' then
-     select coalesce((select p.nombre from agencia.perfiles p where p.id::text=r.datos->>'por'),(select a.nombre_actor from agencia.actividad a where a.actor::text=r.datos->>'por' order by a.id desc limit 1),'') into por_nombre;
+     select coalesce((select p.nombre from agencia.perfiles p where p.id::text=r.datos->>'por'),(select n.nombre from agencia.actores n where n.actor=r.datos->>'por'),'') into por_nombre;
      autor:='Cargó '||por_nombre;
    elsif r.datos->>'por'='auto' then autor:='Automático'; end if;
    if coalesce(r.datos->>'modPor','')<>'' and r.datos->>'modPor' is distinct from r.datos->>'por' then
-     select coalesce((select p.nombre from agencia.perfiles p where p.id::text=r.datos->>'modPor'),(select a.nombre_actor from agencia.actividad a where a.actor::text=r.datos->>'modPor' order by a.id desc limit 1),'') into mod_nombre;
+     select coalesce((select p.nombre from agencia.perfiles p where p.id::text=r.datos->>'modPor'),(select n.nombre from agencia.actores n where n.actor=r.datos->>'modPor'),'') into mod_nombre;
      f_mod:=left(coalesce(r.datos->>'modTs',''),10);
      autor:=autor||case when autor<>'' then ' · ' else '' end||'editó '||mod_nombre||case when f_mod<>'' then ' '||to_char(f_mod::date,'DD/MM/YYYY') else '' end;
    end if;
@@ -2522,9 +2550,9 @@ begin
  into cobrado_filtrado,falta_filtrado from agencia.loteria_ventas v where v.datos->>'soId'=p_sorteo_id and (p_filtro='todos' or (p_filtro='pagados')=coalesce((v.datos->>'pagado')::boolean,false));
  select coalesce(jsonb_agg(jsonb_build_object('venta',v.datos,'socio',coalesce(s.datos->>'nombre','(socio borrado)'),
   'nombreAutor',coalesce((select p.nombre from agencia.perfiles p where p.id::text=v.datos->>'por' and p.activo),
-    (select a.nombre_actor from agencia.actividad a where a.actor::text=v.datos->>'por' order by a.id desc limit 1),''),
+    (select n.nombre from agencia.actores n where n.actor=v.datos->>'por'),''),
   'nombreEditor',coalesce((select p.nombre from agencia.perfiles p where p.id::text=v.datos->>'modPor' and p.activo),
-    (select a.nombre_actor from agencia.actividad a where a.actor::text=v.datos->>'modPor' order by a.id desc limit 1),''),
+    (select n.nombre from agencia.actores n where n.actor=v.datos->>'modPor'),''),
   'importe',(v.datos->>'frac')::numeric*(v.datos->>'precio')::numeric,
   'restante',greatest(0,(v.datos->>'frac')::numeric*(v.datos->>'precio')::numeric-coalesce((v.datos->>'abono')::numeric,0)))
   order by case when regexp_replace(coalesce(v.datos->>'numero',''),'[^0-9]','','g')='' then null
@@ -2605,6 +2633,7 @@ begin
  else id_registro:=p_id;delete from agencia.quini_sorteos_especiales where clave=p_id; end if;
  insert into agencia.actividad(actor,nombre_actor,coleccion,clave,accion) values(perfil.id,perfil.nombre,'q6esp',id_registro,
   case p_accion when 'crear' then 'Creó' when 'editar' then 'Modificó' else 'Eliminó' end);
+ perform agencia.generar_quini_pendientes(perfil);
  update agencia.configuracion set revision=revision+1 returning revision into rev;
  resultado:=jsonb_build_object('revision',rev,'id',id_registro);
  insert into agencia.operaciones(id,actor,revision,revision_anterior,huella,resultado) values(p_operacion,perfil.id,rev,p_revision,huella,resultado);
@@ -2727,6 +2756,8 @@ begin
   delete from agencia.quini_jugadas where clave=p_id;
  end if;
  insert into agencia.actividad(actor,nombre_actor,coleccion,clave,accion) values(perfil.id,perfil.nombre,'q6',id_jugada,case p_accion when 'crear' then 'Creó' when 'editar' then 'Modificó' else 'Eliminó' end);
+ -- done() en la maqueta redibuja y genera lo pendiente del plan activado.
+ perform agencia.generar_quini_pendientes(perfil);
  update agencia.configuracion set revision=revision+1 returning revision into rev;
  resultado:=jsonb_build_object('revision',rev,'id',id_jugada,'liberado',liberado);
  insert into agencia.operaciones(id,actor,revision,revision_anterior,huella,resultado) values(p_operacion,perfil.id,rev,p_revision,huella,resultado);
@@ -2772,7 +2803,7 @@ begin
  if not found then raise exception 'Socio inexistente' using errcode='22023'; end if;
  plan:=socio->'q6';if jsonb_typeof(plan) is distinct from 'object' or jsonb_typeof(plan->'dias') is distinct from 'array' then raise exception 'Plan de Quini inválido' using errcode='22023'; end if;
  -- La maqueta genera antes de cambiar el plan para conservar lo que ya correspondía.
- rev:=public.agencia_generar_quini(rev,gen_random_uuid());
+ perform agencia.generar_quini_pendientes(perfil);
  dias_anteriores:=plan->'dias';
  if p_accion='guardar' then
   dias:=p_datos->'dias';
@@ -2803,7 +2834,7 @@ begin
  end if;
  update agencia.socios set datos=jsonb_set(datos,'{q6}',plan,true) where clave=p_socio_id;
  insert into agencia.actividad(actor,nombre_actor,coleccion,clave,accion) values(perfil.id,perfil.nombre,'socios',p_socio_id,'Modificó');
- rev:=public.agencia_generar_quini(rev,gen_random_uuid());
+ perform agencia.generar_quini_pendientes(perfil);
  update agencia.configuracion set revision=revision+1 returning revision into rev;
  resultado:=jsonb_build_object('revision',rev,'id',p_socio_id);
  insert into agencia.operaciones(id,actor,revision,revision_anterior,huella,resultado) values(p_operacion,perfil.id,rev,p_revision,huella,resultado);
@@ -2911,7 +2942,7 @@ returns jsonb language plpgsql security definer set search_path='' as $$
 declare perfil agencia.perfiles;op agencia.operaciones;rev bigint;huella text;rifa jsonb;resultado jsonb;liberacion jsonb;liberado numeric:=0;i integer;j integer;fecha_pago date;medio text;detalle jsonb;pagos jsonb;medios jsonb;dets jsonb;anulados jsonb;
 begin
  perfil:=agencia.exigir_perfil();
- if p_revision is null or p_operacion is null or coalesce(p_id,'') !~ '^[a-zA-Z0-9_-]{1,128}$' or p_accion is null or p_accion not in ('pagar_cuota','quitar_pago','anular_cuota','eliminar') or jsonb_typeof(p_datos) is distinct from 'object' then raise exception 'Datos de rifa inválidos' using errcode='22023'; end if;
+ if p_revision is null or p_operacion is null or coalesce(p_id,'') !~ '^[a-zA-Z0-9_-]{1,128}$' or p_accion is null or p_accion not in ('pagar_cuota','quitar_pago','anular_pago','anular_cuota','eliminar') or jsonb_typeof(p_datos) is distinct from 'object' then raise exception 'Datos de rifa inválidos' using errcode='22023'; end if;
  huella:=encode(sha256(convert_to(jsonb_build_array('rifa_operar',p_accion,p_id,p_datos)::text,'UTF8')),'hex');
  select revision into strict rev from agencia.configuracion for update;
  select * into op from agencia.operaciones where id=p_operacion;
@@ -2934,13 +2965,15 @@ begin
   if p_accion='anular_cuota' then
    liberacion:=agencia.rifa_liberar_cuota(rifa,i,'todos',perfil.id,perfil.nombre);rifa:=liberacion->'rifa';liberado:=(liberacion->>'liberado')::numeric;
    anulados:=agencia.lista_asignar(rifa->'anulados',i,'true'::jsonb);rifa:=rifa||jsonb_build_object('anulados',anulados);
-  elsif p_accion='quitar_pago' then
-   if coalesce(pagos->>i,'')<>'' then
+  elsif p_accion in ('quitar_pago','anular_pago') then
+   if p_accion='anular_pago' or coalesce(pagos->>i,'')<>'' then
     pagos:=agencia.lista_asignar(pagos,i,'null'::jsonb);rifa:=rifa||jsonb_build_object('pagos',pagos);
     liberacion:=agencia.rifa_liberar_cuota(rifa,i,'completos',perfil.id,perfil.nombre);rifa:=liberacion->'rifa';liberado:=(liberacion->>'liberado')::numeric;
    end if;
-   pagos:=agencia.lista_asignar(rifa->'pagos',i,'null'::jsonb);medios:=agencia.lista_asignar(medios,i,to_jsonb(''::text));dets:=agencia.lista_asignar(dets,i,'null'::jsonb);
-   rifa:=rifa||jsonb_build_object('pagos',pagos,'medios',medios,'dets',dets);
+   pagos:=agencia.lista_asignar(rifa->'pagos',i,'null'::jsonb);
+   if p_accion='quitar_pago' or rifa ? 'medios' then medios:=agencia.lista_asignar(medios,i,to_jsonb(''::text));rifa:=rifa||jsonb_build_object('medios',medios); end if;
+   if p_accion='quitar_pago' then dets:=agencia.lista_asignar(dets,i,'null'::jsonb);rifa:=rifa||jsonb_build_object('dets',dets); end if;
+   rifa:=rifa||jsonb_build_object('pagos',pagos);
   else
    if coalesce(p_datos->>'fecha','') !~ '^\d{4}-\d{2}-\d{2}$' then raise exception 'Fecha inválida' using errcode='22023'; end if;
    fecha_pago:=(p_datos->>'fecha')::date;medio:=coalesce(p_datos->>'medio','');detalle:=p_datos->'detalle';
@@ -2959,5 +2992,766 @@ begin
 exception when invalid_text_representation or invalid_datetime_format or datetime_field_overflow or numeric_value_out_of_range then raise exception 'Datos de rifa inválidos' using errcode='22023';
 end $$;
 revoke all on function public.agencia_rifa_operar(bigint,uuid,text,text,jsonb) from public,anon,authenticated;
+
+-- Listado de rifas y cuotas con importes y vencimientos calculados en la base.
+drop function if exists public.agencia_rifa_listar(bigint,integer,text);
+create or replace function public.agencia_rifa_listar(p_revision bigint,p_anio integer default null,p_socio_id text default null,p_filtro text default 'todos')
+returns jsonb language plpgsql stable security definer set search_path='' as $$
+declare rev bigint;fila record;rifa jsonb;cuotas jsonb;filas jsonb:='[]'::jsonb;pago jsonb;fecha date;importe numeric;abono numeric;pagado numeric;saldo numeric;total numeric:=0;total_pagado numeric:=0;total_saldo numeric:=0;cobrado_filtrado numeric:=0;falta_filtrado numeric:=0;i integer;pagas integer;primera integer;vencido boolean;es_pago boolean;hoy date:=(current_timestamp at time zone 'America/Argentina/Buenos_Aires')::date;config jsonb;
+begin
+ perform agencia.exigir_perfil();
+ if p_revision is null or p_filtro is null or p_filtro not in ('todos','deben','pagados') or (p_socio_id is not null and p_socio_id !~ '^[a-zA-Z0-9_-]{1,128}$') then raise exception 'Datos de consulta inválidos' using errcode='22023'; end if;
+ select revision,datos into strict rev,config from agencia.configuracion;
+ if rev<>p_revision then raise exception 'Los datos cambiaron. Volvé a cargarlos.' using errcode='40001'; end if;
+ for fila in select r.datos,coalesce(s.datos->>'nombre','(socio borrado)') nombre from agencia.rifas r left join agencia.socios s on s.clave=r.datos->>'sid'
+  where (p_anio is null or (r.datos->>'anio')::integer=p_anio) and (p_socio_id is null or r.datos->>'sid'=p_socio_id)
+  order by case when p_socio_id is not null then (r.datos->>'anio')::integer end desc,coalesce(s.datos->>'nombre','(socio borrado)'),r.datos->>'nro',r.posicion loop
+  rifa:=fila.datos;cuotas:='[]'::jsonb;pagado:=0;pagas:=0;primera:=-1;vencido:=false;
+  if jsonb_typeof(rifa->'pagos') is distinct from 'array' then raise exception 'Cuotas inválidas' using errcode='22023'; end if;
+  if jsonb_array_length(rifa->'pagos')>0 then for i in 0..jsonb_array_length(rifa->'pagos')-1 loop
+   pago:=rifa->'pagos'->i;es_pago:=pago not in ('null'::jsonb,'false'::jsonb,'""'::jsonb,'0'::jsonb);
+   importe:=agencia.cuota_rifa((rifa->>'importe')::numeric,(rifa->>'ncuotas')::integer,i);abono:=coalesce((rifa->'abonos'->>i)::numeric,0);
+   fecha:=((rifa->>'desde')::date+make_interval(months=>i))::date;
+   if es_pago then pagado:=pagado+importe;pagas:=pagas+1;else pagado:=pagado+least(importe,abono);if primera<0 then primera:=i;end if;if fecha<=hoy then vencido:=true;end if;end if;
+   cuotas:=cuotas||jsonb_build_array(jsonb_build_object('indice',i,'importe',importe,'vencimiento',fecha,'pago',pago,'pagada',es_pago,'vencida',not es_pago and fecha<=hoy));
+  end loop; end if;
+  pagado:=round(pagado,2);saldo:=(rifa->>'importe')::numeric-pagado;
+  total:=total+(rifa->>'importe')::numeric;total_pagado:=total_pagado+pagado;total_saldo:=total_saldo+saldo;
+  if p_filtro='todos' or (p_filtro='pagados')=(saldo<=0) then cobrado_filtrado:=cobrado_filtrado+pagado;falta_filtrado:=falta_filtrado+greatest(0,saldo); end if;
+  filas:=filas||jsonb_build_array(jsonb_build_object('rifa',rifa,'socio',fila.nombre,'pagado',pagado,'saldo',saldo,'saldada',saldo<=0,'vencido',vencido,'primera',primera,'pagas',pagas,'cuotas',cuotas));
+ end loop;
+ return jsonb_build_object('filas',filas,'cantidad',jsonb_array_length(filas),'total',round(total,2),'cobrado',round(total_pagado,2),'falta',round(total_saldo,2),'cobradoFiltrado',round(cobrado_filtrado,2),'faltaFiltrado',round(falta_filtrado,2),'precio',(config->>'rifaImporte')::numeric,'ncuotas',(config->>'rifaCuotas')::integer,'cuota',agencia.cuota_rifa((config->>'rifaImporte')::numeric,(config->>'rifaCuotas')::integer,0));
+end $$;
+revoke all on function public.agencia_rifa_listar(bigint,integer,text,text) from public,anon,authenticated;
+
+-- Listado de Quini con precios, estados y totales calculados en la base.
+create or replace function public.agencia_quini_listar(p_revision bigint,p_fecha date,p_filtro text default 'todos')
+returns jsonb language plpgsql stable security definer set search_path='' as $$
+declare rev bigint;config jsonb;especial jsonb;precio numeric;fecha_hoy date:=(current_timestamp at time zone 'America/Argentina/Buenos_Aires')::date;filas jsonb;fijos jsonb;ese_dia jsonb;especiales jsonb;cantidad integer;total numeric;cobrado numeric;falta numeric;cobrado_filtrado numeric;falta_filtrado numeric;
+begin
+ perform agencia.exigir_perfil();
+ if p_revision is null or p_fecha is null or p_filtro is null or p_filtro not in ('todos','deben','pagados') then raise exception 'Datos de consulta inválidos' using errcode='22023'; end if;
+ select revision,datos into strict rev,config from agencia.configuracion;
+ if rev<>p_revision then raise exception 'Los datos cambiaron. Volvé a cargarlos.' using errcode='40001'; end if;
+ if jsonb_typeof(config->'q6Dias') is distinct from 'array' then raise exception 'Días de sorteo inválidos' using errcode='22023'; end if;
+ select datos into especial from agencia.quini_sorteos_especiales where datos->>'fecha'=p_fecha::text order by posicion limit 1;
+ precio:=case when especial is null then (config->>'q6Precio')::numeric else (especial->>'precio')::numeric end;
+ if precio is null then raise exception 'Precio de Quini inválido' using errcode='22023'; end if;
+ select count(*)::integer,coalesce(sum((j.datos->>'monto')::numeric),0),
+  coalesce(sum(case when coalesce((j.datos->>'pagado')::boolean,false) then (j.datos->>'monto')::numeric else least((j.datos->>'monto')::numeric,coalesce((j.datos->>'abono')::numeric,0)) end),0),
+  coalesce(sum(case when coalesce((j.datos->>'pagado')::boolean,false) then 0 else greatest(0,round((j.datos->>'monto')::numeric-coalesce((j.datos->>'abono')::numeric,0),2)) end),0),
+  coalesce(sum(case when p_filtro='todos' or (p_filtro='pagados')=coalesce((j.datos->>'pagado')::boolean,false) then case when coalesce((j.datos->>'pagado')::boolean,false) then (j.datos->>'monto')::numeric else least((j.datos->>'monto')::numeric,coalesce((j.datos->>'abono')::numeric,0)) end else 0 end),0),
+  coalesce(sum(case when (p_filtro='todos' or (p_filtro='pagados')=coalesce((j.datos->>'pagado')::boolean,false)) and not coalesce((j.datos->>'pagado')::boolean,false) then greatest(0,round((j.datos->>'monto')::numeric-coalesce((j.datos->>'abono')::numeric,0),2)) else 0 end),0)
+ into cantidad,total,cobrado,falta,cobrado_filtrado,falta_filtrado from agencia.quini_jugadas j where j.datos->>'fecha'=p_fecha::text;
+ select coalesce(jsonb_agg(jsonb_build_object('jugada',j.datos,'socio',coalesce(s.datos->>'nombre','(socio borrado)'),
+  'restante',greatest(0,(j.datos->>'monto')::numeric-coalesce((j.datos->>'abono')::numeric,0)),
+  'nombreAutor',coalesce((select p.nombre from agencia.perfiles p where p.id::text=j.datos->>'por' and p.activo),(select n.nombre from agencia.actores n where n.actor=j.datos->>'por'),''),
+  'nombreEditor',coalesce((select p.nombre from agencia.perfiles p where p.id::text=j.datos->>'modPor' and p.activo),(select n.nombre from agencia.actores n where n.actor=j.datos->>'modPor'),''))
+  order by coalesce(s.datos->>'nombre','(socio borrado)'),j.posicion),'[]'::jsonb)
+ into filas from agencia.quini_jugadas j left join agencia.socios s on s.clave=j.datos->>'sid' where j.datos->>'fecha'=p_fecha::text;
+ select coalesce(jsonb_agg(jsonb_build_object('id',s.clave,'nombre',s.datos->>'nombre','dias',s.datos->'q6'->'dias','cantidad',s.datos->'q6'->'cant',
+  'semanal',(config->>'q6Precio')::numeric*coalesce((s.datos->'q6'->>'cant')::numeric,0)*jsonb_array_length(s.datos->'q6'->'dias')) order by s.datos->>'nombre',s.posicion),'[]'::jsonb)
+ into fijos from agencia.socios s where coalesce((s.datos->>'activo')::boolean,false) and jsonb_typeof(s.datos->'q6'->'dias')='array' and jsonb_array_length(s.datos->'q6'->'dias')>0;
+ select coalesce(jsonb_agg(s.datos->>'nombre' order by s.datos->>'nombre',s.posicion),'[]'::jsonb)
+ into ese_dia from agencia.socios s where coalesce((s.datos->>'activo')::boolean,false) and jsonb_typeof(s.datos->'q6'->'dias')='array' and jsonb_array_length(s.datos->'q6'->'dias')>0
+  and ((s.datos->'q6'->'dias') @> jsonb_build_array(extract(dow from p_fecha)::integer) or not (config->'q6Dias') @> jsonb_build_array(extract(dow from p_fecha)::integer));
+ select coalesce(jsonb_agg(datos order by datos->>'fecha',posicion),'[]'::jsonb) into especiales from agencia.quini_sorteos_especiales;
+ return jsonb_build_object('fecha',p_fecha,'dias',p_fecha-fecha_hoy,'precio',precio,'especial',coalesce(especial->>'nombre',''),'precioComun',(config->>'q6Precio')::numeric,
+  'cantidad',cantidad,'total',round(total,2),'cobrado',round(cobrado,2),'falta',round(falta,2),'cobradoFiltrado',round(cobrado_filtrado,2),'faltaFiltrado',round(falta_filtrado,2),
+  'filas',filas,'fijos',fijos,'eseDia',ese_dia,'especiales',especiales);
+end $$;
+revoke all on function public.agencia_quini_listar(bigint,date,text) from public,anon,authenticated;
+
+-- Cambios de pago y anulación de una jugada de Lotería.
+create or replace function public.agencia_quini_pago(
+ p_revision bigint,p_operacion uuid,p_id text,p_accion text,p_datos jsonb default '{}'::jsonb
+) returns jsonb language plpgsql security definer set search_path='' as $$
+declare perfil agencia.perfiles; op agencia.operaciones; rev bigint; huella text; jugada jsonb; liberacion jsonb; resultado jsonb; monto_liberado numeric:=0;
+ hoy date:=(current_timestamp at time zone 'America/Argentina/Buenos_Aires')::date;
+begin
+ perfil:=agencia.exigir_perfil();
+ if p_revision is null or p_operacion is null or coalesce(p_id,'') !~ '^[a-zA-Z0-9_-]{1,128}$'
+  or p_accion is null or p_accion not in ('editar_pago','anular_pago','marcar','desmarcar','anular')
+  or jsonb_typeof(p_datos) is distinct from 'object' then
+  raise exception 'Datos de pago inválidos' using errcode='22023'; end if;
+ huella:=encode(sha256(convert_to(jsonb_build_array('quini_pago',p_id,p_accion,p_datos)::text,'UTF8')),'hex');
+ select revision into strict rev from agencia.configuracion for update;
+ select * into op from agencia.operaciones where id=p_operacion;
+ if found then
+  if op.actor<>perfil.id or op.revision_anterior<>p_revision or op.huella<>huella then
+   raise exception 'El identificador de operación ya fue utilizado' using errcode='22023'; end if;
+  return op.resultado;
+ end if;
+ if rev<>p_revision then raise exception 'Los datos cambiaron. Volvé a cargarlos.' using errcode='40001'; end if;
+ select datos into jugada from agencia.quini_jugadas where clave=p_id for update;
+ if not found then raise exception 'Jugada inexistente' using errcode='22023'; end if;
+ if p_accion='editar_pago' then
+  if coalesce(p_datos->>'fecha','') !~ '^\d{4}-\d{2}-\d{2}$' then raise exception 'Fecha inválida' using errcode='22023'; end if;
+  jugada:=jugada||jsonb_build_object('fpago',(p_datos->>'fecha')::date,'medio',coalesce(p_datos->>'medio',''),'det',coalesce(p_datos->'detalle','null'::jsonb));
+ elsif p_accion='anular_pago' then
+  jugada:=(jugada-'fpago'-'medio'-'det')||jsonb_build_object('pagado',false);
+  liberacion:=agencia.quini_liberar(jugada,'completos',perfil.id,perfil.nombre);
+  jugada:=liberacion->'jugada'; monto_liberado:=(liberacion->>'liberado')::numeric;
+ elsif p_accion='anular' then
+  liberacion:=agencia.quini_liberar(jugada,'todos',perfil.id,perfil.nombre);
+  jugada:=(liberacion->'jugada')||jsonb_build_object('anulado',true); monto_liberado:=(liberacion->>'liberado')::numeric;
+ elsif p_accion='marcar' then jugada:=jugada||jsonb_build_object('pagado',true,'fpago',hoy,'medio','');
+ else jugada:=(jugada-'fpago'-'medio')||jsonb_build_object('pagado',false); end if;
+ update agencia.quini_jugadas set datos=jugada where clave=p_id;
+ insert into agencia.actividad(actor,nombre_actor,coleccion,clave,accion) values(perfil.id,perfil.nombre,'q6',p_id,'Modificó');
+ update agencia.configuracion set revision=revision+1 returning revision into rev;
+ resultado:=jsonb_build_object('revision',rev,'liberado',monto_liberado);
+ insert into agencia.operaciones(id,actor,revision,revision_anterior,huella,resultado) values(p_operacion,perfil.id,rev,p_revision,huella,resultado);
+ return resultado;
+exception when invalid_datetime_format or datetime_field_overflow then raise exception 'Fecha inválida' using errcode='22023';
+end $$;
+revoke all on function public.agencia_quini_pago(bigint,uuid,text,text,jsonb) from public,anon,authenticated;
+
+-- Datos de Quiniela para el día y las deudas de otras fechas.
+create or replace function public.agencia_quiniela_listar(p_revision bigint,p_fecha date)
+returns jsonb language plpgsql stable security definer set search_path='' as $$
+declare rev bigint;filas jsonb;otros jsonb;cantidad integer;total numeric;cobrado numeric;falta numeric;otros_total numeric;hoy date:=(current_timestamp at time zone 'America/Argentina/Buenos_Aires')::date;
+begin
+ perform agencia.exigir_perfil();
+ if p_revision is null or p_fecha is null then raise exception 'Datos de consulta inválidos' using errcode='22023'; end if;
+ select revision into strict rev from agencia.configuracion;
+ if rev<>p_revision then raise exception 'Los datos cambiaron. Volvé a cargarlos.' using errcode='40001'; end if;
+ select count(*)::integer,coalesce(sum((j.datos->>'monto')::numeric),0),coalesce(sum(case when coalesce((j.datos->>'pagado')::boolean,false) then (j.datos->>'monto')::numeric else least((j.datos->>'monto')::numeric,coalesce((j.datos->>'abono')::numeric,0)) end),0),coalesce(sum(case when coalesce((j.datos->>'pagado')::boolean,false) then 0 else greatest(0,round((j.datos->>'monto')::numeric-coalesce((j.datos->>'abono')::numeric,0),2)) end),0)
+ into cantidad,total,cobrado,falta from agencia.quiniela_jugadas j where j.datos->>'fecha'=p_fecha::text;
+ select coalesce(jsonb_agg(jsonb_build_object('jugada',j.datos,'socio',coalesce(s.datos->>'nombre','(socio borrado)'),
+  'restante',greatest(0,(j.datos->>'monto')::numeric-coalesce((j.datos->>'abono')::numeric,0)),
+  'nombreAutor',coalesce((select p.nombre from agencia.perfiles p where p.id::text=j.datos->>'por' and p.activo),(select n.nombre from agencia.actores n where n.actor=j.datos->>'por'),''),
+  'nombreEditor',coalesce((select p.nombre from agencia.perfiles p where p.id::text=j.datos->>'modPor' and p.activo),(select n.nombre from agencia.actores n where n.actor=j.datos->>'modPor'),''))
+  order by coalesce(s.datos->>'nombre','(socio borrado)'),j.posicion),'[]'::jsonb) into filas
+ from agencia.quiniela_jugadas j left join agencia.socios s on s.clave=j.datos->>'sid' where j.datos->>'fecha'=p_fecha::text;
+ select coalesce(jsonb_agg(jsonb_build_object('jugada',j.datos,'socio',coalesce(s.datos->>'nombre','(socio borrado)'),
+  'restante',greatest(0,(j.datos->>'monto')::numeric-coalesce((j.datos->>'abono')::numeric,0)),
+  'nombreAutor',coalesce((select p.nombre from agencia.perfiles p where p.id::text=j.datos->>'por' and p.activo),(select n.nombre from agencia.actores n where n.actor=j.datos->>'por'),''),
+  'nombreEditor',coalesce((select p.nombre from agencia.perfiles p where p.id::text=j.datos->>'modPor' and p.activo),(select n.nombre from agencia.actores n where n.actor=j.datos->>'modPor'),''))
+  order by j.datos->>'fecha' desc,j.posicion),'[]'::jsonb),coalesce(sum(greatest(0,round((j.datos->>'monto')::numeric-coalesce((j.datos->>'abono')::numeric,0),2))),0) into otros,otros_total
+ from agencia.quiniela_jugadas j left join agencia.socios s on s.clave=j.datos->>'sid' where not coalesce((j.datos->>'pagado')::boolean,false) and j.datos->>'fecha'<>p_fecha::text;
+ return jsonb_build_object('fecha',p_fecha,'dias',p_fecha-hoy,'cantidad',cantidad,'total',round(total,2),'cobrado',round(cobrado,2),'falta',round(falta,2),'otrosTotal',round(otros_total,2),'filas',filas,'otros',otros);
+end $$;
+revoke all on function public.agencia_quiniela_listar(bigint,date) from public,anon,authenticated;
+
+-- Jugadas Quini y Quiniela de una ficha de socio.
+create or replace function public.agencia_jugadas_socio_listar(p_revision bigint,p_socio_id text,p_tipo text)
+returns jsonb language plpgsql stable security definer set search_path='' as $$
+declare rev bigint;filas jsonb;
+begin
+ perform agencia.exigir_perfil();
+ if p_revision is null or coalesce(p_socio_id,'') !~ '^[a-zA-Z0-9_-]{1,128}$' or p_tipo is null or p_tipo not in ('q6','quiniela') then raise exception 'Datos de consulta inválidos' using errcode='22023'; end if;
+ select revision into strict rev from agencia.configuracion;if rev<>p_revision then raise exception 'Los datos cambiaron. Volvé a cargarlos.' using errcode='40001'; end if;
+ if not exists(select 1 from agencia.socios where clave=p_socio_id) then raise exception 'Socio inexistente' using errcode='22023'; end if;
+ if p_tipo='q6' then
+  select coalesce(jsonb_agg(jsonb_build_object('jugada',j.datos,'especial',exists(select 1 from agencia.quini_sorteos_especiales e where e.datos->>'fecha'=j.datos->>'fecha'),
+   'restante',greatest(0,(j.datos->>'monto')::numeric-coalesce((j.datos->>'abono')::numeric,0))) order by j.datos->>'fecha' desc,j.posicion),'[]'::jsonb)
+   into filas from agencia.quini_jugadas j where j.datos->>'sid'=p_socio_id;
+ else
+  select coalesce(jsonb_agg(jsonb_build_object('jugada',j.datos,'especial',false,'restante',greatest(0,(j.datos->>'monto')::numeric-coalesce((j.datos->>'abono')::numeric,0))) order by j.datos->>'fecha' desc,j.posicion),'[]'::jsonb)
+   into filas from agencia.quiniela_jugadas j where j.datos->>'sid'=p_socio_id;
+ end if;
+ return filas;
+end $$;
+revoke all on function public.agencia_jugadas_socio_listar(bigint,text,text) from public,anon,authenticated;
+
+-- Resumen de cuenta y cantidades de productos para la ficha del socio.
+create or replace function public.agencia_socio_resumen(p_revision bigint,p_socio_id text)
+returns jsonb language plpgsql stable security definer set search_path='' as $$
+declare rev bigint;estado jsonb;cuenta jsonb;conceptos jsonb;productos jsonb;conteos jsonb;hoy date:=(current_timestamp at time zone 'America/Argentina/Buenos_Aires')::date;
+begin
+ perform agencia.exigir_perfil();
+ if p_revision is null or coalesce(p_socio_id,'') !~ '^[a-zA-Z0-9_-]{1,128}$' then raise exception 'Datos de consulta inválidos' using errcode='22023'; end if;
+ select revision into strict rev from agencia.configuracion;
+ if rev<>p_revision then raise exception 'Los datos cambiaron. Volvé a cargarlos.' using errcode='40001'; end if;
+ estado:=agencia.estado_cobro_socio(p_socio_id);
+ cuenta:=agencia.cuenta_socio_calcular(estado,p_socio_id,hoy);
+ conceptos:=agencia.conceptos_cobro_calcular(estado,p_socio_id,hoy);
+ select coalesce(jsonb_agg(jsonb_build_object('tipo',tipo,'monto',importe) order by orden),'[]'::jsonb) into productos from (
+  select item->>'t' tipo,sum((item->>'imp')::numeric) importe,case item->>'t' when 'seg' then 1 when 'q6' then 2 when 'lot' then 3 when 'qui' then 4 when 'rifa' then 5 else 6 end orden
+  from jsonb_array_elements(conceptos) with ordinality e(item,orden)
+  where not coalesce((item->>'fut')::boolean,false) and (item->>'t' not in ('seg','rifa') or (item->>'imp')::numeric>0)
+  group by item->>'t'
+ ) x;
+ conteos:=jsonb_build_object('seg',jsonb_array_length(estado->'seguros'),'q6',jsonb_array_length(estado->'q6'),'lot',jsonb_array_length(estado->'lot'),'qui',jsonb_array_length(estado->'quiniela'),'rifa',jsonb_array_length(estado->'rifas'));
+ return cuenta||jsonb_build_object('productos',productos,'conteos',conteos);
+end $$;
+revoke all on function public.agencia_socio_resumen(bigint,text) from public,anon,authenticated;
+
+-- Movimientos de un socio, con importes y agrupación calculados en el servidor.
+create or replace function public.agencia_socio_movimientos(p_revision bigint,p_socio_id text,p_filtro text default 'todo')
+returns jsonb language plpgsql stable security definer set search_path='' as $$
+declare rev bigint;estado jsonb;cuenta jsonb;movimientos jsonb:='[]'::jsonb;ordenados jsonb;visibles jsonb:='[]'::jsonb;fusionados jsonb:='{}'::jsonb;ocultos jsonb:='[]'::jsonb;grupos jsonb:='[]'::jsonb;
+ r jsonb;c jsonb;p jsonb;sorteo jsonb;m jsonb;a jsonb;cobro jsonb;coincidente jsonb;grupo jsonb;fila record;registro record;i integer;importe numeric;venc date;f date;pagado boolean;futuro boolean;clave_ref text;coincidencias integer;conteo integer;fecha_grupo text;debe_grupo numeric;cobrado_grupo numeric;hoy date:=(current_timestamp at time zone 'America/Argentina/Buenos_Aires')::date;
+begin
+ perform agencia.exigir_perfil();
+ if p_revision is null or coalesce(p_socio_id,'') !~ '^[a-zA-Z0-9_-]{1,128}$' or p_filtro is null or p_filtro not in ('todo','debe','pdf') then raise exception 'Datos de consulta inválidos' using errcode='22023'; end if;
+ select revision into strict rev from agencia.configuracion;if rev<>p_revision then raise exception 'Los datos cambiaron. Volvé a cargarlos.' using errcode='40001'; end if;
+ estado:=agencia.estado_cobro_socio(p_socio_id);cuenta:=agencia.cuenta_socio_calcular(estado,p_socio_id,hoy);
+ for registro in select datos from agencia.seguros where datos->>'sid'=p_socio_id order by posicion loop
+  r:=registro.datos;i:=0;
+  for c in select value from jsonb_array_elements(r->'cuotas') loop
+   if not coalesce((c->>'anulado')::boolean,false) then
+    venc:=(c->>'venc')::date;pagado:=coalesce(c->>'pago','')<>'';futuro:=not pagado and venc>hoy;f:=case when pagado and venc>hoy then (c->>'pago')::date else venc end;
+    importe:=case when pagado then (c->>'imp')::numeric else greatest(0,round((c->>'imp')::numeric-coalesce((c->>'abono')::numeric,0),2)) end;
+    movimientos:=movimientos||jsonb_build_array(jsonb_build_object('tipo','seg','fecha',f,'hora',case when i=0 then coalesce(r->>'ts','') else '' end,'ref',jsonb_build_array('seg',r->>'id',i),'importe',importe,'pagado',pagado,'futuro',futuro,'registro',case when i=0 then r else 'null'::jsonb end,'origen',r,'cuota',c,'indice',i));
+   end if;i:=i+1;
+  end loop;
+ end loop;
+ for registro in select datos from agencia.quini_jugadas where datos->>'sid'=p_socio_id and not coalesce((datos->>'anulado')::boolean,false) order by posicion loop
+  r:=registro.datos;pagado:=coalesce((r->>'pagado')::boolean,false);importe:=case when pagado then (r->>'monto')::numeric else greatest(0,round((r->>'monto')::numeric-coalesce((r->>'abono')::numeric,0),2)) end;
+  movimientos:=movimientos||jsonb_build_array(jsonb_build_object('tipo','q6','fecha',r->'fecha','hora',coalesce(r->>'ts',''),'ref',jsonb_build_array('q6',r->>'id'),'importe',importe,'pagado',pagado,'futuro',false,'registro',r,'origen',r,'especial',exists(select 1 from agencia.quini_sorteos_especiales e where e.datos->>'fecha'=r->>'fecha')));
+ end loop;
+ for registro in select datos from agencia.loteria_ventas where datos->>'sid'=p_socio_id and not coalesce((datos->>'anulado')::boolean,false) order by posicion loop
+  r:=registro.datos;select datos into sorteo from agencia.loteria_sorteos where clave=r->>'soId';sorteo:=coalesce(sorteo,'{}'::jsonb);
+  f:=coalesce(nullif(r->>'alta','')::date,case when nullif(sorteo->>'fecha','')::date<hoy then (sorteo->>'fecha')::date else hoy end);pagado:=coalesce((r->>'pagado')::boolean,false);
+  importe:=(r->>'frac')::numeric*(r->>'precio')::numeric;if not pagado then importe:=greatest(0,importe-coalesce((r->>'abono')::numeric,0));end if;
+  movimientos:=movimientos||jsonb_build_array(jsonb_build_object('tipo','lot','fecha',f,'hora',coalesce(r->>'ts',''),'ref',jsonb_build_array('lot',r->>'id'),'importe',importe,'pagado',pagado,'futuro',false,'registro',r,'origen',r,'sorteo',sorteo));
+ end loop;
+ for registro in select datos from agencia.quiniela_jugadas where datos->>'sid'=p_socio_id and not coalesce((datos->>'anulado')::boolean,false) order by posicion loop
+  r:=registro.datos;pagado:=coalesce((r->>'pagado')::boolean,false);importe:=case when pagado then (r->>'monto')::numeric else greatest(0,round((r->>'monto')::numeric-coalesce((r->>'abono')::numeric,0),2)) end;
+  movimientos:=movimientos||jsonb_build_array(jsonb_build_object('tipo','qui','fecha',r->'fecha','hora',coalesce(r->>'ts',''),'ref',jsonb_build_array('quiniela',r->>'id'),'importe',importe,'pagado',pagado,'futuro',false,'registro',r,'origen',r));
+ end loop;
+ for registro in select datos from agencia.rifas where datos->>'sid'=p_socio_id order by posicion loop
+  r:=registro.datos;i:=0;
+  for p in select value from jsonb_array_elements(r->'pagos') loop
+   if not coalesce((r->'anulados'->>i)::boolean,false) then
+    venc:=((r->>'desde')::date+make_interval(months=>i))::date;pagado:=p not in ('null'::jsonb,'false'::jsonb,'""'::jsonb,'0'::jsonb);futuro:=not pagado and venc>hoy;f:=case when pagado and venc>hoy then (p#>>'{}')::date else venc end;
+    importe:=agencia.cuota_rifa((r->>'importe')::numeric,(r->>'ncuotas')::integer,i);if not pagado then importe:=greatest(0,round(importe-coalesce((r->'abonos'->>i)::numeric,0),2));end if;
+    movimientos:=movimientos||jsonb_build_array(jsonb_build_object('tipo','rifa','fecha',f,'hora',case when i=0 then coalesce(r->>'ts','') else '' end,'ref',jsonb_build_array('rifa',r->>'id',i),'importe',importe,'pagado',pagado,'futuro',futuro,'registro',case when i=0 then r else 'null'::jsonb end,'origen',r,'indice',i,'vencimiento',venc,'pago',p));
+   end if;i:=i+1;
+  end loop;
+ end loop;
+ for registro in select datos from agencia.cobros where datos->>'sid'=p_socio_id and not coalesce((datos->>'anulado')::boolean,false) order by posicion loop
+  r:=registro.datos;movimientos:=movimientos||jsonb_build_array(jsonb_build_object('tipo','pago','fecha',r->'fecha','hora',coalesce(r->>'ts',''),'ref',jsonb_build_array('cobro',r->>'id'),'importe',coalesce((r->>'monto')::numeric,0),'pagado',true,'futuro',false,'registro',r,'origen',r,
+   'completos',(select count(*) from jsonb_array_elements(case when jsonb_typeof(r->'aplicados')='array' then r->'aplicados' else '[]'::jsonb end) x where coalesce((x->>'completo')::boolean,false)),
+   'parciales',(select count(*) from jsonb_array_elements(case when jsonb_typeof(r->'aplicados')='array' then r->'aplicados' else '[]'::jsonb end) x where not coalesce((x->>'completo')::boolean,false))));
+ end loop;
+ select coalesce(jsonb_agg(item order by item->>'fecha' desc,item->>'hora' desc,(item->>'tipo'='pago') desc,orden),'[]'::jsonb) into ordenados from jsonb_array_elements(movimientos) with ordinality e(item,orden);
+ -- El PDF de la maqueta usa movs() sin fusionar cobros y omite futuros.
+ if p_filtro='pdf' then
+  select coalesce(jsonb_agg(item order by ord),'[]'::jsonb) into visibles from jsonb_array_elements(ordenados) with ordinality e(item,ord) where not coalesce((item->>'futuro')::boolean,false);
+  return jsonb_build_object('movimientos',visibles,'cuenta',cuenta,'hoy',hoy);
+ end if;
+ -- Fusionar un cobro únicamente cuando corresponde a un único concepto pagado.
+ for registro in select datos from agencia.cobros where datos->>'sid'=p_socio_id and not coalesce((datos->>'anulado')::boolean,false) and coalesce((datos->>'monto')::numeric,0)>0 and coalesce((datos->>'quedo')::numeric,0)=0 and coalesce((datos->>'usado')::numeric,0)=0 and coalesce((datos->>'liberado')::numeric,0)=0 and jsonb_typeof(datos->'aplicados')='array' and jsonb_array_length(datos->'aplicados')=1 order by posicion loop
+  cobro:=registro.datos;a:=cobro->'aplicados'->0;if not coalesce((a->>'completo')::boolean,false) or jsonb_typeof(a->'ref') is distinct from 'array' then continue;end if;
+  select string_agg(value#>>'{}','|' order by ord) into clave_ref from jsonb_array_elements(a->'ref') with ordinality e(value,ord);
+  select item into coincidente from jsonb_array_elements(ordenados) e(item) where item->>'tipo'<>'pago' and coalesce((item->>'pagado')::boolean,false) and not coalesce((item->>'futuro')::boolean,false)
+   and (select string_agg(value#>>'{}','|' order by ord) from jsonb_array_elements(item->'ref') with ordinality v(value,ord))=clave_ref limit 1;
+  if coincidente is null then continue;end if;
+  select count(*) into coincidencias from agencia.cobros c2
+   where c2.datos->>'sid'=p_socio_id and not coalesce((c2.datos->>'anulado')::boolean,false)
+    and exists (select 1 from jsonb_array_elements(case when jsonb_typeof(c2.datos->'aplicados')='array' then c2.datos->'aplicados' else '[]'::jsonb end) x(ap)
+     where jsonb_typeof(ap->'ref')='array'
+      and (select string_agg(value#>>'{}','|' order by ord) from jsonb_array_elements(ap->'ref') with ordinality z(value,ord))=clave_ref);
+  if coincidencias<>1 or round(coalesce((a->>'imp')::numeric,(cobro->>'monto')::numeric),2)<>round((coincidente->>'importe')::numeric,2) or round((cobro->>'monto')::numeric,2)<>round((coincidente->>'importe')::numeric,2) then continue;end if;
+  ocultos:=ocultos||jsonb_build_array(cobro->>'id');fusionados:=fusionados||jsonb_build_object(clave_ref,cobro);
+ end loop;
+ for m in select value from jsonb_array_elements(ordenados) loop
+  if coalesce((m->>'futuro')::boolean,false) or (m->>'tipo'='pago' and ocultos @> jsonb_build_array(m->'origen'->>'id')) or (p_filtro='debe' and (coalesce((m->>'pagado')::boolean,false) or m->>'tipo'='pago')) then continue;end if;
+  select string_agg(value#>>'{}','|' order by ord) into clave_ref from jsonb_array_elements(m->'ref') with ordinality e(value,ord);
+  if fusionados ? clave_ref then m:=m||jsonb_build_object('cobroUnico',fusionados->clave_ref);end if;
+  visibles:=visibles||jsonb_build_array(m);
+ end loop;
+ for fila in select distinct item->>'fecha' fecha from jsonb_array_elements(visibles) e(item) order by 1 desc loop
+  fecha_grupo:=fila.fecha;
+  select coalesce(sum((item->>'importe')::numeric) filter(where not coalesce((item->>'pagado')::boolean,false)),0),coalesce(sum((item->>'importe')::numeric) filter(where item->>'tipo'='pago'),0),coalesce(jsonb_agg(item order by ord),'[]'::jsonb)
+   into debe_grupo,cobrado_grupo,grupo from jsonb_array_elements(visibles) with ordinality e(item,ord) where item->>'fecha'=fecha_grupo;
+  grupos:=grupos||jsonb_build_array(jsonb_build_object('fecha',fecha_grupo,'debe',round(debe_grupo,2),'cobrado',round(cobrado_grupo,2),'filas',grupo));
+ end loop;
+ return jsonb_build_object('grupos',grupos,'cantidad',jsonb_array_length(visibles),'cuenta',cuenta,'hoy',hoy,'ayer',hoy-1);
+end $$;
+revoke all on function public.agencia_socio_movimientos(bigint,text,text) from public,anon,authenticated;
+
+-- Datos de PDF sin fusión de cobros; la maqueta no imprime movimientos futuros.
+create or replace function public.agencia_socio_pdf(p_revision bigint,p_socio_id text)
+returns jsonb language plpgsql stable security definer set search_path='' as $$
+declare resultado jsonb;socio jsonb;nombre_agencia text;
+begin
+ resultado:=public.agencia_socio_movimientos(p_revision,p_socio_id,'pdf');
+ select datos into socio from agencia.socios where clave=p_socio_id;
+ select datos->>'nombre' into nombre_agencia from agencia.configuracion;
+ return resultado||jsonb_build_object('socio',socio,'nombreAgencia',coalesce(nombre_agencia,''),'futuros','[]'::jsonb);
+end $$;
+revoke all on function public.agencia_socio_pdf(bigint,text) from public,anon,authenticated;
+
+create or replace function agencia.cheque_vinculado(p_referencia jsonb)
+returns boolean language sql stable set search_path='' as $$
+ select exists(select 1 from agencia.cobros c cross join lateral jsonb_array_elements(case when jsonb_typeof(c.datos->'aplicados')='array' then c.datos->'aplicados' else '[]'::jsonb end) x(a)
+  where not coalesce((c.datos->>'anulado')::boolean,false) and jsonb_typeof(x.a->'ref')='array'
+   and (select string_agg(value#>>'{}','|' order by ord) from jsonb_array_elements(x.a->'ref') with ordinality t(value,ord))=
+       (select string_agg(value#>>'{}','|' order by ord) from jsonb_array_elements(p_referencia) with ordinality t(value,ord)));
+$$;
+revoke all on function agencia.cheque_vinculado(jsonb) from public,anon,authenticated;
+
+-- Historial de cheques de cobros y pagos independientes.
+create or replace function public.agencia_cheques_listar(p_revision bigint)
+returns jsonb language plpgsql stable security definer set search_path='' as $$
+declare rev bigint;registro record;r jsonb;cuota jsonb;detalle jsonb;pago jsonb;medio text;fecha text;importe numeric;ref jsonb;filas jsonb:='[]'::jsonb;resultado jsonb;i integer;tipo text;
+begin
+ perform agencia.exigir_perfil();
+ if p_revision is null then raise exception 'Revisión inválida' using errcode='22023'; end if;
+ select revision into strict rev from agencia.configuracion;if rev<>p_revision then raise exception 'Los datos cambiaron. Volvé a cargarlos.' using errcode='40001'; end if;
+ for registro in select c.datos,coalesce(s.datos->>'nombre','(socio borrado)') socio from agencia.cobros c left join agencia.socios s on s.clave=c.datos->>'sid' order by c.posicion loop
+  r:=registro.datos;medio:=r->>'medio';detalle:=r->'det';
+  if medio in ('cheque','echeq') and jsonb_typeof(detalle)='object' then
+   filas:=filas||jsonb_build_array(jsonb_build_object('id','cobro:'||(r->>'id'),'numero',coalesce(detalle->>'nro',''),'banco',coalesce(detalle->>'banco',''),'socio',registro.socio,'medio',medio,'fecha',r->>'fecha','monto',coalesce((r->>'monto')::numeric,0),'estado',case when detalle->>'estado' in ('aprobado','rechazado') then detalle->>'estado' else 'pendiente' end,'anulado',coalesce((r->>'anulado')::boolean,false),'rechazoAplicado',coalesce((r->>'rechazoAplicado')::boolean,false),'depositado',coalesce(detalle->>'dep','')<>''));
+  end if;
+ end loop;
+ for registro in select x.datos,coalesce(s.datos->>'nombre','(socio borrado)') socio from agencia.seguros x left join agencia.socios s on s.clave=x.datos->>'sid' order by x.posicion loop
+  r:=registro.datos;i:=0;
+  for cuota in select value from jsonb_array_elements(r->'cuotas') loop
+   detalle:=cuota->'det';medio:=cuota->>'medio';ref:=jsonb_build_array('seg',r->>'id',i);
+   if coalesce(cuota->>'pago','')<>'' and medio in ('cheque','echeq') and jsonb_typeof(detalle)='object' and not coalesce((detalle->>'c')::boolean,false) and not agencia.cheque_vinculado(ref) then
+    filas:=filas||jsonb_build_array(jsonb_build_object('id',array_to_string(array['seg',r->>'id',i::text],'|'),'numero',coalesce(detalle->>'nro',''),'banco',coalesce(detalle->>'banco',''),'socio',registro.socio,'medio',medio,'fecha',cuota->>'pago','monto',coalesce((cuota->>'imp')::numeric,0),'estado',case when detalle->>'estado' in ('aprobado','rechazado') then detalle->>'estado' else 'pendiente' end,'anulado',false,'rechazoAplicado',false,'depositado',coalesce(detalle->>'dep','')<>''));
+   end if;i:=i+1;
+  end loop;
+ end loop;
+ for registro in select x.datos,coalesce(s.datos->>'nombre','(socio borrado)') socio from agencia.rifas x left join agencia.socios s on s.clave=x.datos->>'sid' order by x.posicion loop
+  r:=registro.datos;i:=0;
+  for pago in select value from jsonb_array_elements(r->'pagos') loop
+   detalle:=r->'dets'->i;medio:=r->'medios'->>i;ref:=jsonb_build_array('rifa',r->>'id',i);
+   if pago not in ('null'::jsonb,'false'::jsonb,'""'::jsonb,'0'::jsonb) and medio in ('cheque','echeq') and jsonb_typeof(detalle)='object' and not coalesce((detalle->>'c')::boolean,false) and not agencia.cheque_vinculado(ref) then
+    filas:=filas||jsonb_build_array(jsonb_build_object('id',array_to_string(array['rifa',r->>'id',i::text],'|'),'numero',coalesce(detalle->>'nro',''),'banco',coalesce(detalle->>'banco',''),'socio',registro.socio,'medio',medio,'fecha',pago#>>'{}','monto',agencia.cuota_rifa((r->>'importe')::numeric,(r->>'ncuotas')::integer,i),'estado',case when detalle->>'estado' in ('aprobado','rechazado') then detalle->>'estado' else 'pendiente' end,'anulado',false,'rechazoAplicado',false,'depositado',coalesce(detalle->>'dep','')<>''));
+   end if;i:=i+1;
+  end loop;
+ end loop;
+ for tipo in select unnest(array['q6','lot','quiniela']) loop
+  for registro in select x.datos,x.nombre from (
+   select q.datos,coalesce(s.datos->>'nombre','(socio borrado)') nombre,q.posicion from agencia.quini_jugadas q left join agencia.socios s on s.clave=q.datos->>'sid' where tipo='q6'
+   union all select l.datos,coalesce(s.datos->>'nombre','(socio borrado)'),l.posicion from agencia.loteria_ventas l left join agencia.socios s on s.clave=l.datos->>'sid' where tipo='lot'
+   union all select q.datos,coalesce(s.datos->>'nombre','(socio borrado)'),q.posicion from agencia.quiniela_jugadas q left join agencia.socios s on s.clave=q.datos->>'sid' where tipo='quiniela'
+  ) x order by x.posicion loop
+   r:=registro.datos;detalle:=r->'det';medio:=r->>'medio';ref:=jsonb_build_array(tipo,r->>'id');
+   if coalesce((r->>'pagado')::boolean,false) and medio in ('cheque','echeq') and jsonb_typeof(detalle)='object' and not coalesce((detalle->>'c')::boolean,false) and not agencia.cheque_vinculado(ref) then
+    importe:=case when tipo='lot' then (r->>'frac')::numeric*(r->>'precio')::numeric else (r->>'monto')::numeric end;
+    filas:=filas||jsonb_build_array(jsonb_build_object('id',tipo||'|'||(r->>'id'),'numero',coalesce(detalle->>'nro',''),'banco',coalesce(detalle->>'banco',''),'socio',registro.nombre,'medio',medio,'fecha',r->>'fpago','monto',importe,'estado',case when detalle->>'estado' in ('aprobado','rechazado') then detalle->>'estado' else 'pendiente' end,'anulado',false,'rechazoAplicado',false,'depositado',coalesce(detalle->>'dep','')<>''));
+   end if;
+  end loop;
+ end loop;
+ select coalesce(jsonb_agg(item order by coalesce(item->>'fecha','') desc,ord),'[]'::jsonb) into resultado from jsonb_array_elements(filas) with ordinality e(item,ord);
+ return resultado;
+end $$;
+revoke all on function public.agencia_cheques_listar(bigint) from public,anon,authenticated;
+
+-- Las consultas por socio se usan en la cuenta y en el listado. Estos índices
+-- evitan recorrer todas las colecciones por cada socio de la agencia.
+create index if not exists seguros_socio_idx on agencia.seguros ((datos->>'sid'));
+create index if not exists quini_jugadas_socio_idx on agencia.quini_jugadas ((datos->>'sid'));
+create index if not exists loteria_ventas_socio_idx on agencia.loteria_ventas ((datos->>'sid'));
+create index if not exists quiniela_jugadas_socio_idx on agencia.quiniela_jugadas ((datos->>'sid'));
+create index if not exists rifas_socio_idx on agencia.rifas ((datos->>'sid'));
+
+-- Listado: las etiquetas de producto reflejan la existencia histórica, no
+-- solo los conceptos pendientes. El cliente aplica el orden local por nombre.
+create or replace function public.agencia_socios_listar(p_revision bigint)
+returns jsonb language plpgsql stable security definer set search_path='' as $$
+declare
+ rev bigint; filas jsonb;
+ hoy date:=(current_timestamp at time zone 'America/Argentina/Buenos_Aires')::date;
+begin
+ perform agencia.exigir_perfil();
+ if p_revision is null then raise exception 'Datos de consulta inválidos' using errcode='22023'; end if;
+ select revision into strict rev from agencia.configuracion;
+ if rev<>p_revision then raise exception 'Los datos cambiaron. Volvé a cargarlos.' using errcode='40001'; end if;
+ -- Una sola pasada: armar el arreglo fila por fila con `||` copia todo lo anterior en cada vuelta y se vuelve cuadrático.
+ select coalesce(jsonb_agg(jsonb_build_object('socio',s.datos,'cuenta',cu.cuenta,'productos',pr.productos) order by s.posicion),'[]'::jsonb) into filas
+ from agencia.socios s
+ cross join lateral (select agencia.estado_cobro_socio(s.clave) estado) e
+ cross join lateral (select agencia.cuenta_socio_calcular(e.estado,s.clave,hoy) cuenta) cu
+ cross join lateral (
+  select coalesce(jsonb_agg(to_jsonb(t.producto) order by t.orden),'[]'::jsonb) productos
+  from (values
+   ('seg',1,jsonb_array_length(e.estado->'seguros')>0),
+   ('q6',2,coalesce((s.datos->'q6'->>'activo')::boolean,false) or jsonb_array_length(e.estado->'q6')>0),
+   ('lot',3,jsonb_array_length(e.estado->'lot')>0 or (jsonb_typeof(s.datos->'fijos')='array' and jsonb_array_length(s.datos->'fijos')>0)),
+   ('qui',4,jsonb_array_length(e.estado->'quiniela')>0),
+   ('rifa',5,jsonb_array_length(e.estado->'rifas')>0)
+  ) t(producto,orden,tiene) where t.tiene
+ ) pr;
+ return filas;
+end $$;
+revoke all on function public.agencia_socios_listar(bigint) from public,anon,authenticated;
+
+-- Datos calculados para Inicio. Los rótulos y el orden alfabético por idioma
+-- son presentación; importes y criterios de inclusión quedan en el servidor.
+create or replace function public.agencia_inicio(p_revision bigint)
+returns jsonb language plpgsql stable security definer set search_path='' as $$
+declare
+ rev bigint; hoy date:=(current_timestamp at time zone 'America/Argentina/Buenos_Aires')::date;
+ pendientes jsonb; sorteo jsonb; vencimientos jsonb; cheques jsonb;
+ productos jsonb; deudores jsonb; sin_ofrecer jsonb; no_compran jsonb;
+ total numeric; a_favor numeric; fracciones numeric; compradores bigint;
+begin
+ perform agencia.exigir_perfil();
+ if p_revision is null then raise exception 'Datos de consulta inválidos' using errcode='22023'; end if;
+ select revision into strict rev from agencia.configuracion;
+ if rev<>p_revision then raise exception 'Los datos cambiaron. Volvé a cargarlos.' using errcode='40001'; end if;
+ with conceptos as (
+  select s.datos->>'sid' sid,'seg'::text tipo,1 orden,s.posicion,cu.ord suborden,
+   greatest(0,round(coalesce((cu.dato->>'imp')::numeric,0)-coalesce((cu.dato->>'abono')::numeric,0),2)) importe
+  from agencia.seguros s cross join lateral jsonb_array_elements(coalesce(s.datos->'cuotas','[]'::jsonb)) with ordinality cu(dato,ord)
+  where coalesce(cu.dato->>'pago','')='' and not coalesce((cu.dato->>'anulado')::boolean,false) and (cu.dato->>'venc')::date<=hoy
+   and greatest(0,round(coalesce((cu.dato->>'imp')::numeric,0)-coalesce((cu.dato->>'abono')::numeric,0),2))>0
+  union all
+  select q.datos->>'sid','q6',2,q.posicion,0,greatest(0,round(coalesce((q.datos->>'monto')::numeric,0)-coalesce((q.datos->>'abono')::numeric,0),2))
+  from agencia.quini_jugadas q where not coalesce((q.datos->>'pagado')::boolean,false) and not coalesce((q.datos->>'anulado')::boolean,false)
+  union all
+  select l.datos->>'sid','lot',3,l.posicion,0,greatest(0,coalesce((l.datos->>'frac')::numeric,0)*coalesce((l.datos->>'precio')::numeric,0)-coalesce((l.datos->>'abono')::numeric,0))
+  from agencia.loteria_ventas l where not coalesce((l.datos->>'pagado')::boolean,false) and not coalesce((l.datos->>'anulado')::boolean,false)
+  union all
+  select q.datos->>'sid','qui',4,q.posicion,0,greatest(0,round(coalesce((q.datos->>'monto')::numeric,0)-coalesce((q.datos->>'abono')::numeric,0),2))
+  from agencia.quiniela_jugadas q where not coalesce((q.datos->>'pagado')::boolean,false) and not coalesce((q.datos->>'anulado')::boolean,false)
+  union all
+  select r.datos->>'sid','rifa',5,r.posicion,p.ord,
+   greatest(0,round(agencia.cuota_rifa((r.datos->>'importe')::numeric,(r.datos->>'ncuotas')::integer,(p.ord-1)::integer)-coalesce((r.datos->'abonos'->>((p.ord-1)::integer))::numeric,0),2))
+  from agencia.rifas r cross join lateral jsonb_array_elements(coalesce(r.datos->'pagos','[]'::jsonb)) with ordinality p(dato,ord)
+  where p.dato in ('null'::jsonb,'false'::jsonb,'""'::jsonb) and not coalesce((r.datos->'anulados'->>((p.ord-1)::integer))::boolean,false)
+   and ((r.datos->>'desde')::date+make_interval(months=>(p.ord-1)::integer))::date<=hoy
+   and greatest(0,round(agencia.cuota_rifa((r.datos->>'importe')::numeric,(r.datos->>'ncuotas')::integer,(p.ord-1)::integer)-coalesce((r.datos->'abonos'->>((p.ord-1)::integer))::numeric,0),2))>0
+ ) select coalesce(jsonb_agg(jsonb_build_object('sid',sid,'tipo',tipo,'importe',importe) order by orden,posicion,suborden),'[]'::jsonb) into pendientes from conceptos;
+ -- Deuda de cada socio = suma de sus pendientes vencidos (igual que agencia.cuenta_socio_calcular), en una sola pasada.
+ with por_socio as (select p->>'sid' sid,round(sum((p->>'importe')::numeric),2) deuda from jsonb_array_elements(pendientes) p group by 1)
+ select coalesce(round(sum(greatest(0,coalesce(d.deuda,0)-coalesce((s.datos->>'favor')::numeric,0))),2),0),
+  coalesce(round(sum(greatest(0,coalesce((s.datos->>'favor')::numeric,0)-coalesce(d.deuda,0))),2),0)
+ into total,a_favor from agencia.socios s left join por_socio d on d.sid=s.clave;
+ select coalesce(jsonb_agg(jsonb_build_object('tipo',tip,'importe',importe) order by ord),'[]'::jsonb) into productos from (
+  select t.tip,t.ord,coalesce(round(sum((p->>'importe')::numeric),2),0) importe
+  from (values ('seg',1),('q6',2),('lot',3),('qui',4),('rifa',5)) t(tip,ord)
+  left join lateral jsonb_array_elements(pendientes) p on p->>'tipo'=t.tip group by t.tip,t.ord
+ ) x;
+ select coalesce(jsonb_agg(jsonb_build_object('sid',sid,'nombre',nombre,'monto',monto,'productos',tipos) order by monto desc,primer_orden),'[]'::jsonb) into deudores from (
+  select p.sid,coalesce(s.datos->>'nombre','(socio borrado)') nombre,
+   greatest(0,sum(p.importe)-coalesce((s.datos->>'favor')::numeric,0)) monto,min(p.ord) primer_orden,
+   (select coalesce(jsonb_agg(x.tipo order by x.primer_orden),'[]'::jsonb) from (select z->>'tipo' tipo,min(i) primer_orden from jsonb_array_elements(pendientes) with ordinality e(z,i) where z->>'sid'=p.sid group by z->>'tipo') x) tipos
+  from (select x->>'sid' sid,(x->>'importe')::numeric importe,ord from jsonb_array_elements(pendientes) with ordinality e(x,ord)) p
+  left join agencia.socios s on s.clave=p.sid group by p.sid,s.datos having greatest(0,sum(p.importe)-coalesce((s.datos->>'favor')::numeric,0))>0
+  order by monto desc,primer_orden limit 12
+ ) x;
+ select datos into sorteo from agencia.loteria_sorteos order by case when (datos->>'fecha')::date>=hoy then 0 else 1 end,
+  case when (datos->>'fecha')::date>=hoy then (datos->>'fecha')::date end asc,
+  case when (datos->>'fecha')::date<hoy then (datos->>'fecha')::date end desc,
+  case when (datos->>'fecha')::date>=hoy then posicion end asc,
+  case when (datos->>'fecha')::date<hoy then posicion end desc limit 1;
+ select coalesce(sum((datos->>'frac')::numeric),0),count(distinct datos->>'sid') into fracciones,compradores from agencia.loteria_ventas where datos->>'soId'=sorteo->>'id';
+ -- Solo el nombre: la pantalla de inicio no muestra más y mandar cada socio completo pesa cientos de KB.
+ select coalesce(jsonb_agg(jsonb_build_object('nombre',s.datos->>'nombre') order by s.posicion),'[]'::jsonb) into sin_ofrecer from agencia.socios s where sorteo is not null and coalesce((s.datos->>'activo')::boolean,false)
+  and not exists(select 1 from agencia.loteria_ventas v where v.datos->>'soId'=sorteo->>'id' and v.datos->>'sid'=s.clave)
+  and not exists(select 1 from agencia.loteria_ofertas o where o.datos->>'soId'=sorteo->>'id' and o.datos->>'sid'=s.clave);
+ select coalesce(jsonb_agg(jsonb_build_object('nombre',s.datos->>'nombre') order by s.posicion),'[]'::jsonb) into no_compran from agencia.socios s where coalesce((s.datos->>'activo')::boolean,false)
+  and exists(select 1 from agencia.loteria_ofertas o where o.datos->>'soId'=sorteo->>'id' and o.datos->>'sid'=s.clave);
+ select coalesce(jsonb_agg(jsonb_build_object('seguro',s.datos,'socio',coalesce(a.datos->>'nombre','(socio borrado)'),'dias',(s.datos->>'venc')::date-hoy) order by s.datos->>'venc',s.posicion),'[]'::jsonb)
+ into vencimientos from agencia.seguros s left join agencia.socios a on a.clave=s.datos->>'sid' where (s.datos->>'venc')::date-hoy between -7 and 30;
+ with crudos as (
+  select 'c|'||c.clave id,c.datos->>'sid' sid,c.datos->>'medio' medio,c.datos->'det' det,(c.datos->>'monto')::numeric monto,1 orden,c.posicion,0::bigint suborden
+  from agencia.cobros c where not coalesce((c.datos->>'anulado')::boolean,false) and c.datos->>'medio' in ('cheque','echeq') and coalesce(c.datos->'det'->>'fcobro','')<>'' and coalesce(c.datos->'det'->>'dep','')=''
+  union all
+  select 's|'||s.clave||'|'||(q.ord-1),s.datos->>'sid',q.dato->>'medio',q.dato->'det',(q.dato->>'imp')::numeric,2,s.posicion,q.ord
+  from agencia.seguros s cross join lateral jsonb_array_elements(coalesce(s.datos->'cuotas','[]'::jsonb)) with ordinality q(dato,ord)
+  where coalesce(q.dato->'det'->>'fcobro','')<>'' and coalesce(q.dato->'det'->>'dep','')='' and not coalesce((q.dato->'det'->>'c')::boolean,false)
+ ), unicos as (
+  select c.*,row_number() over (partition by coalesce(medio,'')||coalesce(det->>'nro','')||coalesce(det->>'fcobro','')||coalesce(sid,'') order by orden,posicion,suborden) repeticion from crudos c
+ ) select coalesce(jsonb_agg(jsonb_build_object('id',c.id,'sid',c.sid,'socio',coalesce(s.datos->>'nombre','(socio borrado)'),'medio',c.medio,'detalle',c.det,'monto',c.monto,'dias',(c.det->>'fcobro')::date-hoy) order by c.det->>'fcobro',c.orden,c.posicion,c.suborden),'[]'::jsonb)
+ into cheques from unicos c left join agencia.socios s on s.clave=c.sid where coalesce(c.det->>'nro','')='' or c.repeticion=1;
+ return jsonb_build_object('hoy',hoy,'total',total,'aFavor',a_favor,'productos',productos,'deudores',deudores,'sorteo',sorteo,'fracciones',fracciones,'compradores',compradores,'sinOfrecer',sin_ofrecer,'noCompran',no_compran,'vencimientos',vencimientos,'cheques',cheques);
+end $$;
+revoke all on function public.agencia_inicio(bigint) from public,anon,authenticated;
+
+-- La maqueta marca también las cuotas de seguros que comparten número,
+-- banco y fecha de cobro con el cheque depositado.
+create or replace function public.agencia_depositar_cheque(p_revision bigint,p_operacion uuid,p_referencia text)
+returns bigint language plpgsql security definer set search_path='' as $$
+declare
+ perfil agencia.perfiles; rev bigint; anterior agencia.operaciones; huella text;
+ partes text[]; tipo text; v_clave text; indice integer; registro jsonb; detalle jsonb;
+ seguro record; cuota record; nuevas_cuotas jsonb; modificada boolean; fecha date;
+begin
+ perfil:=agencia.exigir_perfil();
+ if p_revision is null or p_operacion is null or p_referencia is null then raise exception 'Datos de operación inválidos' using errcode='22023'; end if;
+ partes:=string_to_array(p_referencia,'|');tipo:=partes[1];v_clave:=partes[2];
+ if v_clave is null or v_clave !~ '^[a-zA-Z0-9_-]{1,128}$' or not ((tipo='c' and array_length(partes,1)=2) or (tipo='s' and array_length(partes,1)=3 and partes[3] ~ '^[0-9]{1,6}$')) then
+  raise exception 'Referencia inválida' using errcode='22023';
+ end if;
+ if tipo='s' then indice:=partes[3]::integer; end if;
+ huella:=encode(sha256(convert_to(jsonb_build_array('depositar_cheque',p_referencia)::text,'UTF8')),'hex');
+ select revision into strict rev from agencia.configuracion for update;
+ select * into anterior from agencia.operaciones where id=p_operacion;
+ if found then
+  if anterior.actor<>perfil.id or anterior.revision_anterior<>p_revision or anterior.huella<>huella then raise exception 'El identificador de operación ya fue utilizado' using errcode='22023'; end if;
+  return anterior.revision;
+ end if;
+ if rev<>p_revision then raise exception 'Los datos cambiaron. Volvé a cargarlos antes de guardar.' using errcode='40001'; end if;
+ if tipo='c' then
+  select datos into registro from agencia.cobros where agencia.cobros.clave=v_clave for update;
+  detalle:=registro->'det';
+  if registro is null or coalesce((registro->>'anulado')::boolean,false) or registro->>'medio' not in ('cheque','echeq') then raise exception 'No se encontró el cheque' using errcode='22023'; end if;
+ else
+  select datos into registro from agencia.seguros where agencia.seguros.clave=v_clave for update;
+  detalle:=registro#>array['cuotas',indice::text,'det'];
+ end if;
+ if registro is null or jsonb_typeof(detalle) is distinct from 'object' or coalesce(detalle->>'fcobro','')='' or coalesce(detalle->>'dep','')<>'' or (tipo='s' and coalesce((detalle->>'c')::boolean,false)) then
+  raise exception 'No se encontró el cheque pendiente' using errcode='22023';
+ end if;
+ fecha:=(clock_timestamp() at time zone 'America/Argentina/Buenos_Aires')::date;
+ if tipo='c' then
+  update agencia.cobros set datos=jsonb_set(datos,'{det,dep}',to_jsonb(fecha::text),true) where agencia.cobros.clave=v_clave;
+  insert into agencia.actividad(actor,nombre_actor,coleccion,clave,accion) values(perfil.id,perfil.nombre,'cobros',v_clave,'Modificó');
+ end if;
+ for seguro in select s.clave,s.datos from agencia.seguros s where (tipo='s' and s.clave=v_clave) or (coalesce(detalle->>'nro','')<>'' and exists (
+  select 1 from jsonb_array_elements(coalesce(s.datos->'cuotas','[]'::jsonb)) q where q->'det'->>'nro'=detalle->>'nro' and q->'det'->>'banco' is not distinct from detalle->>'banco' and q->'det'->>'fcobro'=detalle->>'fcobro')) for update loop
+  nuevas_cuotas:='[]'::jsonb;modificada:=false;
+  for cuota in select q.dato,q.ord from jsonb_array_elements(coalesce(seguro.datos->'cuotas','[]'::jsonb)) with ordinality q(dato,ord) loop
+   if (tipo='s' and seguro.clave=v_clave and cuota.ord=indice+1) or (coalesce(detalle->>'nro','')<>'' and cuota.dato->'det'->>'nro'=detalle->>'nro' and cuota.dato->'det'->>'banco' is not distinct from detalle->>'banco' and cuota.dato->'det'->>'fcobro'=detalle->>'fcobro') then
+    nuevas_cuotas:=nuevas_cuotas||jsonb_build_array(jsonb_set(cuota.dato,'{det,dep}',to_jsonb(fecha::text),true));modificada:=true;
+   else nuevas_cuotas:=nuevas_cuotas||jsonb_build_array(cuota.dato); end if;
+  end loop;
+  if modificada then
+   update agencia.seguros set datos=jsonb_set(datos,'{cuotas}',nuevas_cuotas,false) where agencia.seguros.clave=seguro.clave;
+   insert into agencia.actividad(actor,nombre_actor,coleccion,clave,accion) values(perfil.id,perfil.nombre,'seguros',seguro.clave,'Modificó');
+  end if;
+ end loop;
+ update agencia.configuracion set revision=revision+1 returning revision into rev;
+ insert into agencia.operaciones(id,actor,revision,revision_anterior,huella) values(p_operacion,perfil.id,rev,p_revision,huella);
+ return rev;
+end $$;
+revoke all on function public.agencia_depositar_cheque(bigint,uuid,text) from public,anon,authenticated;
+
+-- Precios, preferencias y calendario afectan operaciones nuevas. No reescriben
+-- ventas ni planillas ya cargadas.
+create or replace function public.agencia_configurar(p_revision bigint,p_operacion uuid,p_accion text,p_datos jsonb default '{}'::jsonb)
+returns bigint language plpgsql security definer set search_path='' as $$
+declare
+ perfil agencia.perfiles; rev bigint; anterior agencia.operaciones; huella text; cambios jsonb;
+ juego text; dias jsonb; predeterminados constant jsonb:='{"previa":[1,2,3,4,5,6],"primera":[1,2,3,4,5,6],"matutina":[1,2,3,4,5,6],"vespertina":[1,2,3,4,5,6],"nocturna":[1,2,3,4,5,6],"turista":[1,2,3,4,5,6],"quini6":[0,3],"loto":[0,3]}'::jsonb;
+begin
+ perfil:=agencia.exigir_perfil();
+ if p_revision is null or p_operacion is null or p_accion not in ('precios','toto_dias','toto_restablecer') or p_accion is null or jsonb_typeof(p_datos) is distinct from 'object' then raise exception 'Datos de configuración inválidos' using errcode='22023'; end if;
+ if p_accion='precios' then
+  if jsonb_typeof(p_datos->'nombre') is distinct from 'string' or jsonb_typeof(p_datos->'wsp') is distinct from 'string' or p_datos->>'wsp' not in ('app','web')
+   or jsonb_typeof(p_datos->'q6Precio') is distinct from 'number' or jsonb_typeof(p_datos->'fracPrecio') is distinct from 'number' or jsonb_typeof(p_datos->'rifaImporte') is distinct from 'number' or jsonb_typeof(p_datos->'rifaCuotas') is distinct from 'number'
+   or jsonb_typeof(p_datos->'q6Dias') is distinct from 'array' then raise exception 'Datos de precios inválidos' using errcode='22023'; end if;
+  if (p_datos->>'q6Precio')::numeric<0 or (p_datos->>'fracPrecio')::numeric<0 or (p_datos->>'rifaImporte')::numeric<0 or (p_datos->>'rifaCuotas')::numeric<1 or (p_datos->>'rifaCuotas')::numeric<>trunc((p_datos->>'rifaCuotas')::numeric)
+   or exists(select 1 from jsonb_array_elements(p_datos->'q6Dias') d where jsonb_typeof(d)<>'number' or (d#>>'{}')::numeric not between 0 and 6 or (d#>>'{}')::numeric<>trunc((d#>>'{}')::numeric))
+   or (select count(*)<>count(distinct d) from jsonb_array_elements(p_datos->'q6Dias') d) then raise exception 'Datos de precios inválidos' using errcode='22023'; end if;
+  cambios:=jsonb_build_object('nombre',p_datos->'nombre','wsp',p_datos->'wsp','q6Precio',p_datos->'q6Precio','q6Dias',p_datos->'q6Dias','fracPrecio',p_datos->'fracPrecio','rifaImporte',p_datos->'rifaImporte','rifaCuotas',p_datos->'rifaCuotas');
+ else
+  if p_accion='toto_restablecer' then dias:=predeterminados; else dias:=p_datos; end if;
+  for juego in select jsonb_object_keys(predeterminados) loop
+   if jsonb_typeof(dias->juego) is distinct from 'array' then raise exception 'Faltan días de un juego' using errcode='22023'; end if;
+   if jsonb_array_length(dias->juego)=0 or exists(select 1 from jsonb_array_elements(dias->juego) d where jsonb_typeof(d)<>'number' or (d#>>'{}')::numeric not between 0 and 6 or (d#>>'{}')::numeric<>trunc((d#>>'{}')::numeric))
+    or (select count(*)<>count(distinct d) from jsonb_array_elements(dias->juego) d) then raise exception 'Días de juego inválidos' using errcode='22023'; end if;
+  end loop;
+  if exists(select 1 from jsonb_object_keys(dias) k where not predeterminados ? k) then raise exception 'Juego inválido' using errcode='22023'; end if;
+  cambios:=jsonb_build_object('totoDias',dias);
+ end if;
+ huella:=encode(sha256(convert_to(jsonb_build_array('configurar',p_accion,p_datos)::text,'UTF8')),'hex');
+ select revision into strict rev from agencia.configuracion for update;
+ select * into anterior from agencia.operaciones where id=p_operacion;
+ if found then
+  if anterior.actor<>perfil.id or anterior.revision_anterior<>p_revision or anterior.huella<>huella then raise exception 'El identificador de operación ya fue utilizado' using errcode='22023'; end if;
+  return anterior.revision;
+ end if;
+ if rev<>p_revision then raise exception 'Los datos cambiaron. Volvé a cargarlos antes de guardar.' using errcode='40001'; end if;
+ update agencia.configuracion set datos=datos||cambios,revision=revision+1 returning revision into rev;
+ perform agencia.generar_quini_pendientes(perfil);
+ insert into agencia.actividad(actor,nombre_actor,coleccion,clave,accion) values(perfil.id,perfil.nombre,'conf',p_accion,'Modificó');
+ insert into agencia.operaciones(id,actor,revision,revision_anterior,huella) values(p_operacion,perfil.id,rev,p_revision,huella);
+ return rev;
+end $$;
+revoke all on function public.agencia_configurar(bigint,uuid,text,jsonb) from public,anon,authenticated;
+
+-- Búsqueda global: misma precedencia y límite que la maqueta. Se comparan
+-- cadenas literalmente para que '%' y '_' no actúen como comodines.
+create or replace function public.agencia_buscar(p_revision bigint,p_consulta text)
+returns jsonb language plpgsql stable security definer set search_path='' as $$
+declare rev bigint; consulta text; resultado jsonb;
+begin
+ perform agencia.exigir_perfil();
+ if p_revision is null or p_consulta is null then raise exception 'Datos de consulta inválidos' using errcode='22023'; end if;
+ select revision into strict rev from agencia.configuracion;
+ if rev<>p_revision then raise exception 'Los datos cambiaron. Volvé a cargarlos.' using errcode='40001'; end if;
+ consulta:=lower(replace(agencia.texto_recortar_js(p_consulta),chr(304),'i'||chr(775)));
+ if consulta='' then return '[]'::jsonb; end if;
+ select coalesce(jsonb_agg(jsonb_build_object('id',id,'principal',principal,'secundario',secundario) order by categoria,posicion,suborden),'[]'::jsonb) into resultado from (
+  select 1 categoria,s.posicion,0::bigint suborden,s.clave id,s.datos->>'nombre' principal,'Socio '||coalesce(s.datos->>'nro','undefined') secundario
+  from agencia.socios s where position(consulta in lower(replace(coalesce(s.datos->>'nombre',''),chr(304),'i'||chr(775))))>0
+   or lower(replace(coalesce(s.datos->>'nro','undefined'),chr(304),'i'||chr(775)))=consulta or position(consulta in coalesce(s.datos->>'dni',''))>0
+  union all
+  select 2,v.posicion,0,v.datos->>'sid',coalesce(v.datos->>'numero','undefined')||' · '||coalesce(s.datos->>'nombre','(socio borrado)'),coalesce(d.datos->>'nombre','')
+  from agencia.loteria_ventas v left join agencia.socios s on s.clave=v.datos->>'sid' left join agencia.loteria_sorteos d on d.clave=v.datos->>'soId'
+  where position(consulta in coalesce(v.datos->>'numero','undefined'))>0
+  union all
+  select 3,s.posicion,f.ord,s.clave,coalesce(f.dato->>'numero','undefined')||' · '||coalesce(s.datos->>'nombre',''),'Número fijo'
+  from agencia.socios s cross join lateral jsonb_array_elements(case when jsonb_typeof(s.datos->'fijos')='array' then s.datos->'fijos' else '[]'::jsonb end) with ordinality f(dato,ord)
+  where position(consulta in coalesce(f.dato->>'numero','undefined'))>0
+  union all
+  select 4,r.posicion,0,r.datos->>'sid','Rifa '||coalesce(r.datos->>'nro','undefined')||' · '||coalesce(s.datos->>'nombre','(socio borrado)'),coalesce(r.datos->>'anio','undefined')
+  from agencia.rifas r left join agencia.socios s on s.clave=r.datos->>'sid' where position(consulta in coalesce(r.datos->>'nro','undefined'))>0
+  order by categoria,posicion,suborden limit 12
+ ) coincidencias;
+ return resultado;
+end $$;
+revoke all on function public.agencia_buscar(bigint,text) from public,anon,authenticated;
+
+-- Como en la maqueta: considerar los últimos 3000 movimientos y mostrar los
+-- últimos 400 del usuario seleccionado. Los usuarios activos alimentan filtros.
+create or replace function public.agencia_actividad(p_revision bigint,p_usuario text default 'todos')
+returns jsonb language plpgsql stable security definer set search_path='' as $$
+declare rev bigint; usuarios jsonb; movimientos jsonb;
+begin
+ perform agencia.exigir_perfil();
+ if p_revision is null or p_usuario is null or (p_usuario<>'todos' and p_usuario !~ '^[0-9a-fA-F-]{36}$') then raise exception 'Datos de consulta inválidos' using errcode='22023'; end if;
+ select revision into strict rev from agencia.configuracion;
+ if rev<>p_revision then raise exception 'Los datos cambiaron. Volvé a cargarlos.' using errcode='40001'; end if;
+ select coalesce(jsonb_agg(jsonb_build_object('id',p.id,'nombre',p.nombre) order by p.nombre,p.id),'[]'::jsonb) into usuarios from agencia.perfiles p where p.activo;
+ with recientes as materialized (select * from agencia.actividad order by id desc limit 3000),
+ seleccion as (select * from recientes where p_usuario='todos' or actor::text=p_usuario order by id desc limit 400)
+ select coalesce(jsonb_agg(jsonb_build_object('id',a.id::text,'usuarioId',a.actor,'nombre',coalesce(p.nombre,b.nombre_actor,''),'ts',a.fecha,'accion',a.accion,'tipo',a.coleccion,'detalle',a.clave) order by a.id desc),'[]'::jsonb)
+ into movimientos from seleccion a left join agencia.perfiles p on p.id=a.actor and p.activo
+ left join lateral (select nombre_actor from agencia.actividad h where h.actor=a.actor order by h.id desc limit 1) b on p.id is null;
+ return jsonb_build_object('usuarios',usuarios,'movimientos',movimientos);
+end $$;
+revoke all on function public.agencia_actividad(bigint,text) from public,anon,authenticated;
+
+-- Reinicio explícito de datos de negocio. Conserva usuarios de Auth, perfiles,
+-- actividad y nombre de la agencia; requiere confirmación en la interfaz.
+create or replace function public.agencia_reiniciar(p_revision bigint,p_operacion uuid)
+returns bigint language plpgsql security definer set search_path='' as $$
+declare perfil agencia.perfiles;rev bigint;anterior agencia.operaciones;huella text;coleccion record;nombre text;config_nueva jsonb;
+begin
+ perfil:=agencia.exigir_perfil(true);
+ if p_revision is null or p_operacion is null then raise exception 'Datos de operación inválidos' using errcode='22023'; end if;
+ huella:=encode(sha256(convert_to('reiniciar_agencia','UTF8')),'hex');
+ select revision,datos->>'nombre' into strict rev,nombre from agencia.configuracion for update;
+ select * into anterior from agencia.operaciones where id=p_operacion;
+ if found then
+  if anterior.actor<>perfil.id or anterior.revision_anterior<>p_revision or anterior.huella<>huella then raise exception 'El identificador de operación ya fue utilizado' using errcode='22023'; end if;
+  return anterior.revision;
+ end if;
+ if rev<>p_revision then raise exception 'Los datos cambiaron. Volvé a cargarlos antes de guardar.' using errcode='40001'; end if;
+ for coleccion in select * from agencia.colecciones() loop
+  execute format('insert into agencia.actividad(actor,nombre_actor,coleccion,clave,accion) select $1,$2,$3,clave,''Eliminó'' from agencia.%I',coleccion.tabla)
+   using perfil.id,perfil.nombre,coleccion.clave;
+  execute format('delete from agencia.%I',coleccion.tabla);
+ end loop;
+ config_nueva:=jsonb_build_object('nombre',coalesce(nombre,''),'q6Precio',4000,'q6Dias',jsonb_build_array(3,0),'fracPrecio',10000,'rifaImporte',17000,'rifaCuotas',10);
+ insert into agencia.actividad(actor,nombre_actor,coleccion,clave,accion) select perfil.id,perfil.nombre,'ajustes','Configuración','Modificó' from agencia.configuracion where datos is distinct from config_nueva;
+ update agencia.configuracion set datos=config_nueva,revision=revision+1 returning revision into rev;
+ insert into agencia.operaciones(id,actor,revision,revision_anterior,huella) values(p_operacion,perfil.id,rev,p_revision,huella);
+ return rev;
+end $$;
+revoke all on function public.agencia_reiniciar(bigint,uuid) from public,anon,authenticated;
+
+-- Validación previa del respaldo normalizado antes de cualquier reemplazo.
+-- No transforma datos ni omite entidades históricas cuyos socios ya se borraron.
+create or replace function agencia.validar_respaldo(p_estado jsonb)
+returns void language plpgsql immutable set search_path='' as $$
+declare conf jsonb; r jsonb; c jsonb; x jsonb; clave text; hoy date:='2000-01-01';
+begin
+ if jsonb_typeof(p_estado) is distinct from 'object' or jsonb_typeof(p_estado->'conf') is distinct from 'object' then raise exception 'Respaldo inválido: configuración' using errcode='22023'; end if;
+ conf:=p_estado->'conf';
+ if jsonb_typeof(conf->'q6Dias') is distinct from 'array' or jsonb_typeof(conf->'q6Precio') is distinct from 'number'
+  or jsonb_typeof(conf->'fracPrecio') is distinct from 'number' or jsonb_typeof(conf->'rifaImporte') is distinct from 'number' or jsonb_typeof(conf->'rifaCuotas') is distinct from 'number'
+  or coalesce((conf->>'q6Precio')::numeric,-1)<0 or coalesce((conf->>'fracPrecio')::numeric,-1)<0 or coalesce((conf->>'rifaImporte')::numeric,-1)<0
+  or coalesce((conf->>'rifaCuotas')::numeric,0)<1 or (conf->>'rifaCuotas')::numeric<>trunc((conf->>'rifaCuotas')::numeric)
+  or exists(select 1 from jsonb_array_elements(conf->'q6Dias') d where jsonb_typeof(d)<>'number' or (d#>>'{}')::numeric not between 0 and 6 or (d#>>'{}')::numeric<>trunc((d#>>'{}')::numeric)) then
+  raise exception 'Respaldo inválido: configuración' using errcode='22023'; end if;
+ foreach clave in array array['socios','seguros','q6esp','q6','q6skip','cobros','sorteos','lot','ofertas','quiniela','rifas','toto'] loop
+  if jsonb_typeof(p_estado->clave) is distinct from 'array' then raise exception 'Respaldo inválido: colección %',clave using errcode='22023'; end if;
+ end loop;
+ -- Cobros y exclusiones pueden conservar referencias históricas tras una baja.
+ foreach clave in array array['seguros','q6','lot','ofertas','quiniela','rifas'] loop
+  for r in select value from jsonb_array_elements(p_estado->clave) loop
+   if coalesce(r->>'sid','')='' or not exists(select 1 from jsonb_array_elements(p_estado->'socios') s where s->>'id'=r->>'sid') then
+    raise exception 'Respaldo inválido: socio inexistente en %',clave using errcode='22023';
+   end if;
+   if clave in ('lot','ofertas') and (coalesce(r->>'soId','')='' or not exists(select 1 from jsonb_array_elements(p_estado->'sorteos') s where s->>'id'=r->>'soId')) then
+    raise exception 'Respaldo inválido: sorteo inexistente en %',clave using errcode='22023';
+   end if;
+  end loop;
+ end loop;
+ if exists(select 1 from jsonb_array_elements(p_estado->'q6skip') e where jsonb_typeof(e)<>'string') then raise exception 'Respaldo inválido: exclusiones' using errcode='22023'; end if;
+ for r in select value from jsonb_array_elements(p_estado->'socios') loop
+  if jsonb_typeof(r) is distinct from 'object' or jsonb_typeof(r->'nombre') is distinct from 'string' or jsonb_typeof(r->'fijos') is distinct from 'array'
+   or jsonb_typeof(r->'q6') is distinct from 'object' or jsonb_typeof(r->'q6'->'dias') is distinct from 'array'
+   or (r ? 'activo' and jsonb_typeof(r->'activo') is distinct from 'boolean') or (r ? 'favor' and jsonb_typeof(r->'favor') is distinct from 'number')
+   or (r->'q6' ? 'auto' and jsonb_typeof(r->'q6'->'auto') is distinct from 'boolean') or (r ? 'favor' and (r->>'favor')::numeric<0)
+   or (r->'q6' ? 'cant' and (jsonb_typeof(r->'q6'->'cant') is distinct from 'number' or (r->'q6'->>'cant')::numeric<1 or (r->'q6'->>'cant')::numeric<>trunc((r->'q6'->>'cant')::numeric)))
+   or exists(select 1 from jsonb_array_elements(r->'fijos') f where jsonb_typeof(f) is distinct from 'object' or jsonb_typeof(f->'numero') is distinct from 'string')
+   or exists(select 1 from jsonb_array_elements(r->'q6'->'dias') d where jsonb_typeof(d)<>'number' or (d#>>'{}')::numeric not between 0 and 6 or (d#>>'{}')::numeric<>trunc((d#>>'{}')::numeric)) then
+   raise exception 'Respaldo inválido: socio %',coalesce(r->>'id','') using errcode='22023'; end if;
+  perform agencia.cuenta_socio_calcular(p_estado,r->>'id',hoy);
+  perform agencia.conceptos_cobro_calcular(p_estado,r->>'id',hoy);
+ end loop;
+ for r in select value from jsonb_array_elements(p_estado->'seguros') loop
+  if jsonb_typeof(r->'cuotas') is distinct from 'array' or coalesce(r->>'sid','')='' then raise exception 'Respaldo inválido: seguro' using errcode='22023'; end if;
+  perform (r->>'ingreso')::date;perform (r->>'venc')::date;
+  if coalesce(r->>'ingreso','')='' or coalesce(r->>'venc','')='' then raise exception 'Respaldo inválido: fechas de seguro' using errcode='22023'; end if;
+  for c in select value from jsonb_array_elements(r->'cuotas') loop
+   if jsonb_typeof(c->'imp') is distinct from 'number' or (c->>'imp')::numeric<0 or coalesce(c->>'venc','')='' or (c ? 'abono' and (jsonb_typeof(c->'abono') is distinct from 'number' or (c->>'abono')::numeric<0)) then raise exception 'Respaldo inválido: cuota de seguro' using errcode='22023'; end if;
+   perform (c->>'venc')::date;if coalesce(c->>'pago','')<>'' then perform (c->>'pago')::date; end if;
+  end loop;
+ end loop;
+ foreach clave in array array['q6','quiniela'] loop
+  for r in select value from jsonb_array_elements(p_estado->clave) loop
+   if jsonb_typeof(r->'monto') is distinct from 'number' or (r->>'monto')::numeric<0 or coalesce(r->>'sid','')='' or coalesce(r->>'fecha','')='' or (r ? 'pagado' and jsonb_typeof(r->'pagado') is distinct from 'boolean') then raise exception 'Respaldo inválido: %',clave using errcode='22023'; end if;
+   perform (r->>'fecha')::date;
+  end loop;
+ end loop;
+ for r in select value from jsonb_array_elements(p_estado->'sorteos') loop
+  if coalesce(r->>'fecha','')='' or jsonb_typeof(r->'frac') is distinct from 'number' or (r->>'frac')::numeric<1 or (r->>'frac')::numeric<>trunc((r->>'frac')::numeric) or jsonb_typeof(r->'precio') is distinct from 'number' or (r->>'precio')::numeric<0 then raise exception 'Respaldo inválido: sorteo' using errcode='22023'; end if;perform (r->>'fecha')::date;
+ end loop;
+ for r in select value from jsonb_array_elements(p_estado->'q6esp') loop
+  if coalesce(r->>'fecha','')='' or jsonb_typeof(r->'precio') is distinct from 'number' then raise exception 'Respaldo inválido: sorteo especial' using errcode='22023'; end if;perform (r->>'fecha')::date;
+ end loop;
+ for r in select value from jsonb_array_elements(p_estado->'lot') loop
+  if jsonb_typeof(r->'frac') is distinct from 'number' or (r->>'frac')::numeric<1 or (r->>'frac')::numeric<>trunc((r->>'frac')::numeric) or jsonb_typeof(r->'precio') is distinct from 'number' or (r->>'precio')::numeric<0 or coalesce(r->>'sid','')='' or coalesce(r->>'soId','')='' or (r ? 'pagado' and jsonb_typeof(r->'pagado') is distinct from 'boolean') then raise exception 'Respaldo inválido: venta de lotería' using errcode='22023'; end if;
+ end loop;
+ for r in select value from jsonb_array_elements(p_estado->'rifas') loop
+  if jsonb_typeof(r->'importe') is distinct from 'number' or (r->>'importe')::numeric<0 or jsonb_typeof(r->'ncuotas') is distinct from 'number' or (r->>'ncuotas')::numeric<1 or (r->>'ncuotas')::numeric<>trunc((r->>'ncuotas')::numeric) or jsonb_typeof(r->'pagos') is distinct from 'array' or coalesce(r->>'sid','')='' or coalesce(r->>'desde','')='' then raise exception 'Respaldo inválido: rifa' using errcode='22023'; end if;
+  perform (r->>'desde')::date;perform agencia.cuota_rifa((r->>'importe')::numeric,(r->>'ncuotas')::integer,0);
+  for x in select value from jsonb_array_elements(r->'pagos') loop if x not in ('null'::jsonb,'false'::jsonb,'""'::jsonb,'0'::jsonb) then perform (x#>>'{}')::date; end if;end loop;
+ end loop;
+ for r in select value from jsonb_array_elements(p_estado->'cobros') loop
+  if jsonb_typeof(r->'monto') is distinct from 'number' or (r->>'monto')::numeric<0 or coalesce(r->>'sid','')='' or coalesce(r->>'fecha','')=''
+   or (r ? 'aplicados' and jsonb_typeof(r->'aplicados') is distinct from 'array')
+   or (r ? 'anulado' and jsonb_typeof(r->'anulado') is distinct from 'boolean')
+   or (r ? 'rechazoAplicado' and jsonb_typeof(r->'rechazoAplicado') is distinct from 'boolean')
+   or (r ? 'det' and jsonb_typeof(r->'det') not in ('object','null')) then raise exception 'Respaldo inválido: cobro' using errcode='22023'; end if;
+  perform (r->>'fecha')::date;
+  if coalesce(r->'det'->>'fcobro','')<>'' then perform (r->'det'->>'fcobro')::date; end if;
+  if coalesce(r->'det'->>'dep','')<>'' then perform (r->'det'->>'dep')::date; end if;
+  if r->'det' ? 'estado' and r->'det'->>'estado' not in ('pendiente','aprobado','rechazado') then raise exception 'Respaldo inválido: estado de cheque' using errcode='22023'; end if;
+  for x in select value from jsonb_array_elements(coalesce(r->'aplicados','[]'::jsonb)) loop
+   if jsonb_typeof(x) is distinct from 'object' or jsonb_typeof(x->'ref') is distinct from 'array' or jsonb_typeof(x->'completo') is distinct from 'boolean'
+    or (x ? 'abono' and (jsonb_typeof(x->'abono') is distinct from 'number' or (x->>'abono')::numeric<0))
+    or (x ? 'imp' and (jsonb_typeof(x->'imp') is distinct from 'number' or (x->>'imp')::numeric<0)) then raise exception 'Respaldo inválido: aplicación de cobro' using errcode='22023'; end if;
+   if coalesce(x->'ref'->>1,'') !~ '^[a-zA-Z0-9_-]{1,128}$' or not (
+    (x->'ref'->>0 in ('q6','lot','quiniela') and jsonb_array_length(x->'ref')=2) or
+    (x->'ref'->>0 in ('seg','rifa') and jsonb_array_length(x->'ref')=3 and coalesce(x->'ref'->>2,'') ~ '^[0-9]{1,6}$')
+   ) then raise exception 'Respaldo inválido: referencia de cobro' using errcode='22023'; end if;
+  end loop;
+ end loop;
+ for r in select value from jsonb_array_elements(p_estado->'toto') loop perform agencia.toto_validar_datos(r); end loop;
+exception when data_exception then raise exception 'Respaldo inválido: campos, fechas o importes incorrectos' using errcode='22023';
+end $$;
+revoke all on function agencia.validar_respaldo(jsonb) from public,anon,authenticated;
+
+-- Variante controlada: valida y reemplaza todo atómicamente, solo como administrador.
+create or replace function public.agencia_restaurar_verificado(p_revision bigint,p_operacion uuid,p_estado jsonb)
+returns bigint language plpgsql security definer set search_path='' as $$
+declare perfil agencia.perfiles;rev bigint;existente boolean;
+begin
+ perfil:=agencia.exigir_perfil(true);
+ perform agencia.validar_respaldo(p_estado);
+ -- Serializar la comprobación del UUID con el reemplazo y la generación.
+ select revision into strict rev from agencia.configuracion for update;
+ select exists(select 1 from agencia.operaciones where id=p_operacion) into existente;
+ rev:=agencia.persistir(p_revision,p_operacion,p_estado,true);
+ if not existente then perform agencia.generar_quini_pendientes(perfil); end if;
+ return rev;
+end $$;
+revoke all on function public.agencia_restaurar_verificado(bigint,uuid,jsonb) from public,anon,authenticated;
 
 commit;

@@ -1,19 +1,22 @@
 import { useEffect, useRef, useState } from 'react';
-import { agencia, type DatosAgencia } from '../lib/supabase.service';
+import { obtenerRevision, recargarSesion, sincronizarRevision } from './useSesion';
+import { useNavegacion } from '../stores/navegacion.store';
 
 type Revision = { p_revision: number; p_operacion: string };
-export type PuenteOperacion<R> = {
-  obtenerRevision: () => number;
-  bloquear: () => void;
-  desbloquear: () => void;
-  sincronizar: (datos: DatosAgencia, resultado: R) => void;
-};
+
+interface Opciones<R> {
+  /** Se ejecuta cuando el servidor confirmó y la pantalla ya tiene los datos nuevos. */
+  alExito?: (resultado: R) => void;
+}
 
 // Reintenta el mismo UUID y contenido si no se pudo confirmar una operación.
-export function useOperacionSegura<E extends object, R>(puente: PuenteOperacion<R>, ejecutar: (entrada: E & Revision) => Promise<R>) {
+export function useOperacionSegura<E extends object, R>(ejecutar: (entrada: E & Revision) => Promise<R>, opciones: Opciones<R> = {}) {
   const pendiente = useRef<(E & Revision) | null>(null);
   const enCurso = useRef(false);
   const resultadoIncierto = useRef(false);
+  const alExito = useRef(opciones.alExito);
+  alExito.current = opciones.alExito;
+  const bloquear = useNavegacion((estado) => estado.bloquear);
   const [bloqueado, setBloqueado] = useState(false);
   const [procesando, setProcesando] = useState(false);
   const [error, setError] = useState('');
@@ -33,28 +36,29 @@ export function useOperacionSegura<E extends object, R>(puente: PuenteOperacion<
     try {
       if (!pendiente.current) {
         if (!entrada) throw new Error('No hay una operación para reintentar.');
-        const revision = puente.obtenerRevision();
-        puente.bloquear();
+        const revision = obtenerRevision();
+        if (revision === null) throw new Error('Esperá a que termine de cargar.');
+        bloquear(true);
         pendiente.current = { ...entrada, p_revision: revision, p_operacion: crypto.randomUUID() };
       }
       setBloqueado(true);
       const resultado = await ejecutar(pendiente.current);
       confirmada = true;
-      if (!agencia) throw new Error('No se pudo actualizar la pantalla.');
-      const datos = await agencia.leer();
-      puente.sincronizar(datos, resultado);
+      await sincronizarRevision(resultado);
       pendiente.current = null;
       resultadoIncierto.current = false;
       setBloqueado(false);
-      puente.desbloquear();
+      bloquear(false);
+      alExito.current?.(resultado);
       return true;
     } catch (e) {
       const codigo = (e as { code?: string })?.code;
       if (!confirmada && !resultadoIncierto.current && (codigo === '22023' || codigo === '40001' || codigo === '42501')) {
         pendiente.current = null;
         setBloqueado(false);
-        puente.desbloquear();
-      } else if (!pendiente.current) { setBloqueado(false); puente.desbloquear(); }
+        bloquear(false);
+        if (codigo === '40001') void recargarSesion().catch(() => {});
+      } else if (!pendiente.current) { setBloqueado(false); bloquear(false); }
       else resultadoIncierto.current = true;
       setError(e instanceof Error ? e.message : 'No se pudo confirmar la operación.');
       return false;

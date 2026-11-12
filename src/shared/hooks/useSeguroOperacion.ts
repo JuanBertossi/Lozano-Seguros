@@ -1,22 +1,42 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useOperacionSegura, type PuenteOperacion } from './useOperacionSegura';
-import { segurosService, type ResultadoSeguro, type SolicitudCuotas, type SolicitudSeguro } from '../lib/seguros.service';
+import { useQuery } from '@tanstack/react-query';
+import { useOperacionSegura } from './useOperacionSegura';
+import { segurosService, type AccionSeguro, type ResultadoSeguro, type SolicitudSeguro } from '../lib/seguros.service';
+import { monedaSeguro } from '../lib/presentarSeguro';
+import { avisar } from '../stores/avisos.store';
+import { useDialogos } from '../stores/dialogos.store';
 
-export function usePreviaSeguro(solicitud:SolicitudCuotas|null) {
-  return useQuery({ queryKey:['seguros','cuotas',solicitud], queryFn:()=>segurosService.prever(solicitud!), enabled:solicitud!==null, retry:false });
-}
+export type ResultadoOperacionSeguro = ResultadoSeguro & { accion: AccionSeguro };
+export type EntradaSeguro = Omit<SolicitudSeguro, 'p_revision' | 'p_operacion'>;
 
 export function useListadoSeguros(revision:number|null,socioId:string|null) {
-  return useQuery({queryKey:['seguros','listado',revision,socioId],queryFn:()=>segurosService.listar(revision!,socioId),enabled:revision!==null,retry:false});
+  return useQuery({
+    queryKey:['seguros','listado',revision,socioId],
+    queryFn:()=>segurosService.listar(revision!,socioId),
+    // Al confirmarse una operación cambia la revisión: se muestra lo anterior hasta que llegue lo nuevo.
+    placeholderData:(previo,consulta)=>consulta?.queryKey[3]===socioId?previo:undefined,
+    enabled:revision!==null,retry:false,
+  });
 }
 
-export function useOperacionSeguro(puente:PuenteOperacion<ResultadoSeguro>) {
-  const queryClient=useQueryClient();
-  const operacion=useMutation({ mutationFn:(solicitud:SolicitudSeguro)=>segurosService.operar(solicitud), onSuccess:async()=>{
-    await Promise.all([
-      queryClient.invalidateQueries({queryKey:['estado-agencia'],refetchType:'none'}),
-      queryClient.invalidateQueries({queryKey:['seguros'],refetchType:'none'}),
-    ]);
-  }});
-  return useOperacionSegura<Omit<SolicitudSeguro,'p_revision'|'p_operacion'>,ResultadoSeguro>(puente,operacion.mutateAsync);
+/** Mensajes de la maqueta: `done(...)` y el aviso de saldo a favor 2,5 s después. */
+export function avisarResultadoSeguro({accion,liberado}:ResultadoOperacionSeguro) {
+  avisar(accion==='pagar_cuota'?'Pago registrado':accion==='quitar_pago'?'Cuota desmarcada':accion==='anular_cuota'?'Movimiento anulado':accion==='eliminar'?'Eliminado':'Seguro guardado');
+  if(liberado>0){
+    const monto=monedaSeguro(liberado);
+    const texto=accion==='quitar_pago'||accion==='anular_cuota'?`${monto} quedaron como saldo a favor`
+      :accion==='editar'?`Lo que ya había pagado de cuotas cambiadas (${monto}) quedó como saldo a favor`
+      :`Lo que ya había pagado (${monto}) quedó como saldo a favor`;
+    setTimeout(()=>avisar(texto),2500);
+  }
+}
+
+/**
+ * Crear, editar, eliminar, pagar, desmarcar o anular una cuota de seguro.
+ * Sin `alExito`: cierra el diálogo abierto y avisa como la maqueta.
+ */
+export function useOperacionSeguro(opciones:{alExito?:(resultado:ResultadoOperacionSeguro)=>void}={}) {
+  return useOperacionSegura<EntradaSeguro,ResultadoOperacionSeguro>(
+    async (solicitud)=>({...await segurosService.operar(solicitud),accion:solicitud.p_accion}),
+    {alExito:opciones.alExito??((resultado)=>{useDialogos.getState().cerrar();avisarResultadoSeguro(resultado)})},
+  );
 }

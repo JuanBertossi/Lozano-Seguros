@@ -1,45 +1,46 @@
-import { useEffect,useRef,useState } from 'react';
-import { useForm,useWatch } from 'react-hook-form';
-import { zodResolver } from '@hookform/resolvers/zod';
-import { usePanelEvent } from '../../../shared/hooks/usePanelEvent';
-import type { SocioRapidoInput } from '../../../shared/schemas/socioRapido.schema';
+import { useEffect, useRef, type ChangeEvent } from 'react';
 import { SocioRapido } from '../../../shared/components/SocioRapido';
-import type { PuenteOperacion } from '../../../shared/hooks/useOperacionSegura';
-import type { ResultadoSocio } from '../../../shared/lib/socios.service';
-import { ventaSchema,type VentaInput } from '../loteria.schema';
-import { useGuardarVenta, useEliminarVenta, usePreviaVenta } from '../hooks/useVenta';
-import type { ResultadoVenta, ResultadoEliminarVenta } from '../api/loteria.service';
-const usarSql=import.meta.env.VITE_LOTERIA_SQL==='true';
-type Socio={id:string;nombre:string;nro:string};
-type Sorteo={id:string;nombre:string;fracciones:number};
-type Edicion={id:string|null;inicial:VentaInput;socios:Socio[];socioFijo:boolean;sorteos:Sorteo[];guardar:(datos:VentaInput,cobrar:boolean)=>void;eliminar:()=>void;crearSocio:(nombre:string,telefono:string)=>Socio|null;puenteSocio?:PuenteOperacion<ResultadoSocio>;puenteVenta?:PuenteOperacion<ResultadoVenta>;puenteEliminar?:PuenteOperacion<ResultadoEliminarVenta>;cobrarVenta?:(sid:string,id:string)=>void;fijoSocio:(sid:string,soId:string)=>{numero:string;frac:string}|null;resumen:(soId:string,frac:string)=>string;cerrar:()=>void};
-const campo='w-full min-w-0 rounded-lg border border-solid border-[var(--ln)] bg-[var(--sf)] px-3 py-[11px] text-[16px] focus-visible:outline-2 focus-visible:outline-[var(--ac)]';
-const etiqueta='grid gap-1.5 text-[14.5px] font-medium';
-const btn='cursor-pointer rounded-[9px] border border-solid border-[var(--ln)] bg-[var(--sf)] px-4 py-2.5 text-[15px] hover:bg-[var(--sf2)]';
-export function VentaDialog(){const e=usePanelEvent<Edicion>('agencia:editar-venta');return e&&<Formulario key={e.id??'nuevo'} edicion={e}/>}
-function Formulario({edicion:e}:{edicion:Edicion}){
- const dialogo=useRef<HTMLDialogElement>(null),[socios,setSocios]=useState(e.socios),[nuevo,setNuevo]=useState(false);
- const ultimoResultado=useRef<ResultadoVenta|null>(null);
- const cobroPendiente=useRef<string|null>(null);
- const guardarSql=useGuardarVenta({obtenerRevision:()=>{if(!e.puenteVenta)throw new Error('Conexión de Lotería no disponible.');return e.puenteVenta.obtenerRevision()},bloquear:()=>{if(!e.puenteVenta)throw new Error('Conexión de Lotería no disponible.');e.puenteVenta.bloquear()},desbloquear:()=>e.puenteVenta?.desbloquear(),sincronizar:(datos,resultado)=>{ultimoResultado.current=resultado;if(!e.puenteVenta)throw new Error('Conexión de Lotería no disponible.');e.puenteVenta.sincronizar(datos,resultado)}});
- const eliminarSql=useEliminarVenta({obtenerRevision:()=>{if(!e.puenteEliminar)throw new Error('Conexión de Lotería no disponible.');return e.puenteEliminar.obtenerRevision()},bloquear:()=>{if(!e.puenteEliminar)throw new Error('Conexión de Lotería no disponible.');e.puenteEliminar.bloquear()},desbloquear:()=>e.puenteEliminar?.desbloquear(),sincronizar:(datos,resultado)=>{if(!e.puenteEliminar)throw new Error('Conexión de Lotería no disponible.');e.puenteEliminar.sincronizar(datos,resultado)}});
- const {register,handleSubmit,setValue,getValues,control,formState:{errors}}=useForm<VentaInput>({resolver:zodResolver(ventaSchema),defaultValues:e.inicial});
- const seleccion=register('sid'),sorteoCampo=register('soId'),soId=useWatch({control,name:'soId'}),frac=useWatch({control,name:'frac'}),sorteo=e.sorteos.find(x=>x.id===soId);
- let revision:number|null=null;
- try { if(usarSql&&e.puenteVenta)revision=e.puenteVenta.obtenerRevision(); } catch { /* Esperar guardados pendientes. */ }
- const previa=usePreviaVenta(usarSql&&revision!==null&&soId&&/^\d+$/.test(frac)&&Number(frac)>0&&Number(frac)<=(sorteo?.fracciones??0)?{p_revision:revision,p_sorteo_id:soId,p_fracciones:Number(frac),p_venta_id:e.id}:null);
- const moneda=(valor:number)=>new Intl.NumberFormat('es-AR',{style:'currency',currency:'ARS',minimumFractionDigits:Number.isInteger(valor)?0:2,maximumFractionDigits:Number.isInteger(valor)?0:2}).format(valor);
- const resumen=usarSql?(previa.data?`${previa.data.entero?'Entero · ':''}${previa.data.fracciones} × ${moneda(previa.data.precio)} = ${moneda(previa.data.total)}`:''):e.resumen(soId,frac);
- useEffect(()=>{dialogo.current?.showModal()},[]);
- function aplicarFijo(sid:string){if(getValues('numero'))return;const fijo=e.fijoSocio(sid,getValues('soId'));if(fijo){setValue('numero',fijo.numero);setValue('frac',fijo.frac)}}
- function elegir(socio:Socio){setSocios(a=>a.some(x=>x.id===socio.id)?a:[...a,socio]);setValue('sid',socio.id,{shouldValidate:true});aplicarFijo(socio.id);setNuevo(false)}
- function crear({nombre,telefono}:SocioRapidoInput){const socio=e.crearSocio(nombre,telefono);if(socio)elegir(socio)}
- async function guardar(datos:VentaInput,cobrar:boolean){if(!usarSql){e.guardar(datos,cobrar);return}ultimoResultado.current=null;cobroPendiente.current=cobrar?datos.sid:null;const ok=await guardarSql.enviar({p_id:e.id,p_datos:{...datos,frac:Number(datos.frac)}});const resultado=ultimoResultado.current as ResultadoVenta|null;if(ok&&cobroPendiente.current&&resultado)e.cobrarVenta?.(cobroPendiente.current,resultado.id)}
- async function reintentarGuardado(){const ok=await guardarSql.enviar();const resultado=ultimoResultado.current as ResultadoVenta|null;if(ok&&cobroPendiente.current&&resultado)e.cobrarVenta?.(cobroPendiente.current,resultado.id)}
- function eliminar(){if(!usarSql){e.eliminar();return}if(e.id&&confirm('¿Eliminar?'))void eliminarSql.enviar({p_id:e.id})}
- return <dialog ref={dialogo} aria-labelledby="titulo-venta-dialog" className="m-auto max-h-[90vh] w-[calc(100%-28px)] max-w-[700px] overflow-auto rounded-2xl border-0 bg-[var(--sf)] p-0 text-[var(--ink)] shadow-2xl backdrop:bg-[#0a0c0f73]" onCancel={event=>{event.preventDefault();if(!guardarSql.bloqueado&&!eliminarSql.bloqueado)e.cerrar()}}>{usarSql&&guardarSql.bloqueado&&<button type="button" className={btn} disabled={guardarSql.procesando} onClick={()=>void reintentarGuardado()}>Reintentar guardado</button>}{usarSql&&eliminarSql.bloqueado&&<button type="button" className={btn} disabled={eliminarSql.procesando} onClick={()=>void eliminarSql.enviar()}>Reintentar eliminación</button>}<form inert={guardarSql.bloqueado||eliminarSql.bloqueado} onSubmit={handleSubmit(datos=>void guardar(datos,false))} noValidate><div className="grid gap-3.5 px-6 pb-5 pt-[22px] max-[820px]:px-4"><h2 id="titulo-venta-dialog" className="text-[22px] font-semibold">{e.id?'Editar venta':'Vender número de lotería'}</h2>
- {e.socioFijo?<p className="text-sm">Socio: <b>{socios.find(x=>x.id===e.inicial.sid)?.nombre}</b> · N° {socios.find(x=>x.id===e.inicial.sid)?.nro}</p>:<label className={etiqueta}>Socio<select className={campo} {...seleccion} onChange={event=>{if(event.target.value==='__new'){setNuevo(true);setValue('sid','');return}void seleccion.onChange(event);aplicarFijo(event.target.value)}}><option value="">Elegí un socio…</option><option value="__new">＋ Nuevo socio…</option>{socios.map(s=><option key={s.id} value={s.id}>{s.nombre} · {s.nro}</option>)}</select></label>}
- {nuevo&&<SocioRapido crear={crear} elegir={elegir} puente={e.puenteSocio} cancelar={()=>setNuevo(false)} campo={campo} etiqueta={etiqueta} boton={btn}/>}
- <label className={etiqueta}>Sorteo<select className={campo} {...sorteoCampo} onChange={event=>{void sorteoCampo.onChange(event);const actual=e.sorteos.find(x=>x.id===event.target.value);if(actual)setValue('frac',String(Math.min(Number(getValues('frac'))||actual.fracciones,actual.fracciones)))}}>{e.sorteos.map(s=><option key={s.id} value={s.id}>{s.nombre}</option>)}</select></label><div className="grid gap-3 min-[560px]:grid-cols-2"><label className={etiqueta}>Número<input className={`${campo} font-mono`} inputMode="numeric" {...register('numero')}/></label><label className={etiqueta}>Fracciones<select className={campo} {...register('frac')}>{Array.from({length:sorteo?.fracciones??0},(_,i)=>i+1).map(n=><option key={n} value={n}>{n===sorteo?.fracciones?`Entero (${n} fracciones)`:`${n} ${n>1?'fracciones':'fracción'}`}</option>)}</select></label></div><p className="text-sm text-[var(--mu)]">{resumen}</p>{!e.id&&<label className="flex items-center gap-2 text-sm"><input type="checkbox" {...register('fijo')}/>Guardar como número fijo del socio</label>}
- {usarSql&&previa.error instanceof Error&&<p role="alert" className="text-sm text-[var(--bad)]">{previa.error.message}</p>}{usarSql&&(guardarSql.error||eliminarSql.error)&&<p role="alert" className="text-sm text-[var(--bad)]">{guardarSql.error||eliminarSql.error}</p>}{Object.values(errors).map((error,i)=>error?.message&&<p key={i} role="alert" className="text-sm text-[var(--bad)]">{error.message}</p>)}</div><div className="flex items-center justify-between border-t border-solid border-[var(--ln)] px-6 py-4"><span>{e.id&&<button type="button" className={`${btn} text-[var(--bad)]`} onClick={eliminar} disabled={guardarSql.bloqueado||eliminarSql.bloqueado}>Eliminar</button>}</span><div className="flex flex-wrap gap-2"><button type="button" className={btn} onClick={e.cerrar} disabled={guardarSql.bloqueado||eliminarSql.bloqueado}>Cancelar</button><button className={btn} disabled={guardarSql.bloqueado||eliminarSql.bloqueado}>Guardar</button><button type="button" className={`${btn} !border-[var(--ac)] !bg-[var(--ac)] text-white`} disabled={guardarSql.bloqueado||eliminarSql.bloqueado} onClick={()=>void handleSubmit(datos=>void guardar(datos,true))()}>Guardar y cobrar</button></div></div></form></dialog>;
+import { fechaCorta } from '../../../shared/lib/fechas';
+import * as s from '../../../shared/lib/estilosJuegos';
+import { useDialogo, useDialogos } from '../../../shared/stores/dialogos.store';
+import type { FormularioVenta } from '../api/loteria.service';
+import { useFormularioVenta } from '../hooks/useVenta';
+import { useVentaFormulario, type ParametrosVenta } from '../hooks/useVentaFormulario';
+import { abrirModal } from '../../../shared/lib/dialogo';
+
+// Alta rápida de socio (SocioRapido es compartido): se le pasan las clases Tailwind del formulario.
+const nuevoSocio={campo:'',etiqueta:`${s.campoAnidado} mb-0`,boton:s.btnMSm};
+// "Entero · 20 × $ 10.000 = $ 200.000" → el total va en negrita (como la maqueta).
+function Resumen({texto}:{texto:string}){
+ const i=texto.lastIndexOf(' = ');
+ return <p className={s.nota}>{i<0?texto:<>{texto.slice(0,i+3)}<b className="text-[var(--ink)]">{texto.slice(i+3)}</b></>}</p>;
+}
+
+export function VentaDialog(){
+ const params=useDialogo('venta');
+ return params&&<Cargador key={`${params.id??''}|${params.sid??''}|${params.soId??''}`} params={params}/>;
+}
+function Cargador({params}:{params:ParametrosVenta}){
+ const formulario=useFormularioVenta(params.id??null,params.sid??null,params.soId??null);
+ const datos=formulario.data;
+ if(formulario.error instanceof Error&&!datos)return <Mensaje texto={formulario.error.message}/>;
+ if(!datos)return null;
+ if(!datos.inicial)return <Mensaje texto="Primero cargá un sorteo en Ajustes"/>;
+ return <Formulario params={params} datos={datos} inicial={datos.inicial}/>;
+}
+function Mensaje({texto}:{texto:string}){
+ const dialogo=useRef<HTMLDialogElement>(null),cerrar=useDialogos(e=>e.cerrar);
+ useEffect(()=>{abrirModal(dialogo.current);},[]);
+ return <dialog ref={dialogo} aria-labelledby="titulo-venta-dialog" className={s.marco} onCancel={event=>{event.preventDefault();cerrar()}}><div className={s.cuerpo}><h2 id="titulo-venta-dialog" className={s.tituloDialogo}>Vender número de lotería</h2><p role="alert" className={s.nota}>{texto}</p></div><div className={s.pie}><span></span><div className={s.acciones}><button type="button" className={s.btnM} onClick={cerrar}>Cerrar</button></div></div></dialog>;
+}
+function Formulario({params,datos,inicial}:{params:ParametrosVenta;datos:FormularioVenta;inicial:NonNullable<FormularioVenta['inicial']>}){
+ const dialogo=useRef<HTMLDialogElement>(null);
+ const f=useVentaFormulario(params,datos,inicial);
+ useEffect(()=>{abrirModal(dialogo.current);},[]);
+ const abrirNuevo=()=>{void f.campos.socio.onChange({target:{value:'__new'}} as unknown as ChangeEvent<HTMLSelectElement>)};
+ return <dialog ref={dialogo} aria-labelledby="titulo-venta-dialog" className={s.marco} onCancel={event=>{event.preventDefault();if(!f.bloqueado)f.cerrar()}}>{(f.guardado.bloqueado||f.eliminacion.bloqueado)&&<div className={s.franja}>{f.guardado.bloqueado&&<button type="button" className={s.btn} disabled={f.guardado.procesando} onClick={()=>void f.guardado.enviar()}>Reintentar guardado</button>}{f.eliminacion.bloqueado&&<button type="button" className={s.btn} disabled={f.eliminacion.procesando} onClick={()=>void f.eliminacion.enviar()}>Reintentar eliminación</button>}</div>}<form inert={f.bloqueado} onSubmit={f.guardar} noValidate><div className={s.cuerpo}><h2 id="titulo-venta-dialog" className={s.tituloDialogo}>{f.esEdicion?'Editar venta':'Vender número de lotería'}</h2>
+ {f.socioFijo?<p className={s.notaTinta}>Socio: <b>{f.socioInicial?.nombre}</b> · N° <span className={s.mono}>{f.socioInicial?.nro}</span></p>:<><label className={s.campoSeguido}>Socio<select {...f.campos.socio}><option value="">Elegí un socio…</option><option value="__new">＋ Nuevo socio…</option>{f.socios.map(o=><option key={o.id} value={o.id}>{o.nombre} · {o.nro}</option>)}</select></label>{!f.nuevo&&<div className={s.agregarSocio}><button type="button" className={s.agregarSocioLink} onClick={abrirNuevo}>＋ ¿No está? Crear socio nuevo</button></div>}</>}
+ {f.nuevo&&<div className="mb-3"><SocioRapido elegir={f.elegir} cancelar={()=>f.setNuevo(false)} {...nuevoSocio}/></div>}
+ <label className={s.campo}>Sorteo<select {...f.campos.sorteo}>{datos.sorteos.map(o=><option key={o.id} value={o.id}>{o.nombre} · {fechaCorta(o.fecha)} · {o.frac} fracciones</option>)}</select></label><div className={s.fila2}><label className={s.campo}>Número<input className={s.entradaMono} inputMode="numeric" {...f.campos.numero}/></label><label className={s.campo}>Fracciones<select {...f.campos.frac}>{Array.from({length:f.sorteo?.frac??0},(_,i)=>i+1).map(n=><option key={n} value={n}>{n===f.sorteo?.frac?`Entero (${n} fracciones)`:`${n} ${n>1?'fracciones':'fracción'}`}</option>)}</select></label></div><Resumen texto={f.resumen}/><div className={s.opciones}>{!f.esEdicion&&<label className={s.opcion}><input type="checkbox" {...f.campos.fijo}/>Guardar como número fijo del socio</label>}</div>
+ {f.errorPrevia&&<p role="alert" className={s.aviso}>{f.errorPrevia}</p>}{(f.guardado.error||f.eliminacion.error)&&<p role="alert" className={s.aviso}>{f.guardado.error||f.eliminacion.error}</p>}{f.mensajes.map((mensaje,i)=><p key={i} role="alert" className={s.aviso}>{mensaje}</p>)}</div><div className={s.pie}>{f.esEdicion?<button type="button" className={s.btnMD} onClick={f.eliminar} disabled={f.bloqueado}>Eliminar</button>:<span></span>}<div className={s.acciones}><button type="button" className={s.btnM} onClick={f.cerrar} disabled={f.bloqueado}>Cancelar</button><button className={s.btnM} disabled={f.bloqueado}>Guardar</button><button type="button" className={s.btnMP} disabled={f.bloqueado} onClick={f.guardarYCobrar}>Guardar y cobrar</button></div></div></form></dialog>;
 }

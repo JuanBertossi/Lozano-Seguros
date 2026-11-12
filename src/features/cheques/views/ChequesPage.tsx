@@ -1,63 +1,48 @@
-import { useState } from 'react';
-import { usePanelEvent } from '../../../shared/hooks/usePanelEvent';
-
-const estados = { pendiente: 'Pendiente', aprobado: 'Aprobado', rechazado: 'Rechazado' } as const;
-type Estado = keyof typeof estados;
-
-interface Cheque {
-  id: string;
-  numero: string;
-  banco: string;
-  socio: string;
-  medio: string;
-  fecha: string;
-  monto: string;
-  estado: Estado;
-  anulado: boolean;
-  rechazoAplicado: boolean;
-  depositado: boolean;
-}
-
-interface VistaCheques {
-  cheques: Cheque[];
-  actualizar: (id: string, estado: Estado) => void;
-}
-
-const campo = 'rounded-lg border border-solid border-[var(--ln)] bg-[var(--sf)] px-3 py-2.5 text-sm focus-visible:outline-2 focus-visible:outline-[var(--ac)]';
+import { useNavegacion } from '../../../shared/stores/navegacion.store';
+import { useCheques } from '../hooks/useCheques';
+import { estadosCheque, type EstadoCheque } from '../lib/chequesVista';
+import { boton, cabecera, campo, etiqueta, fila2, nota, rotulo, tabla, tarjeta, titulo, vacio } from '../../../shared/lib/clases';
 
 export function ChequesPage() {
-  const vista = usePanelEvent<VistaCheques>('agencia:cheques');
-  return vista && <Historial vista={vista} />;
+  const pagina = useNavegacion((estado) => estado.pagina);
+  return pagina === 'cheques' ? <Historial /> : null;
 }
 
-function Historial({ vista }: { vista: VistaCheques }) {
-  const [numero, setNumero] = useState('');
-  const [banco, setBanco] = useState('');
-  const cheques = vista.cheques.filter((cheque) =>
-    cheque.numero.toLowerCase().includes(numero.trim().toLowerCase()) &&
-    cheque.banco.toLowerCase().includes(banco.trim().toLowerCase()),
-  );
+function Historial() {
+  const { filtro, listado, operacion, actualizar, cheques } = useCheques();
 
+  if (!listado.data) {
+    return (
+      <section aria-live="polite">
+        {listado.error instanceof Error ? listado.error.message : 'Cargando cheques…'}
+        {listado.isError && <button type="button" className={boton()} onClick={() => void listado.refetch()}>Reintentar</button>}
+      </section>
+    );
+  }
   return (
     <section aria-labelledby="titulo-cheques">
-      <header className="mb-[18px]">
-        <h1 id="titulo-cheques" className="text-2xl font-semibold">Cheques y e-cheq</h1>
-        <p className="text-[var(--mu)]">Buscá por número o banco para saber quién entregó cada cheque.</p>
+      <header className={cabecera}>
+        <div>
+          <h1 id="titulo-cheques" className={titulo}>Cheques y e-cheq</h1>
+          <p className="text-[var(--mu)]">Buscá por número o banco para saber quién entregó cada cheque.</p>
+        </div>
       </header>
-      <div className="mb-4 rounded-[14px] border border-solid border-[var(--ln)] bg-[var(--sf)] px-5 py-[18px]">
-        <div className="mb-3 grid grid-cols-2 gap-3 max-[560px]:grid-cols-1">
-          <label className="grid gap-1 text-sm font-medium">
+      <div className={tarjeta}>
+        {operacion.error && <p role="alert" className="text-[13px] text-[var(--bad)]">{operacion.error}</p>}
+        {operacion.bloqueado && !operacion.procesando && <button type="button" className={boton()} onClick={() => void operacion.enviar()}>Reintentar operación</button>}
+        <div className={fila2}>
+          <label className={rotulo}>
             Número
-            <input className={campo} placeholder="Número de cheque" value={numero} onChange={(event) => setNumero(event.target.value)} />
+            <input className={campo} placeholder="Número de cheque" {...filtro.register('numero')} />
           </label>
-          <label className="grid gap-1 text-sm font-medium">
+          <label className={rotulo}>
             Banco
-            <input className={campo} placeholder="Banco" value={banco} onChange={(event) => setBanco(event.target.value)} />
+            <input className={campo} placeholder="Banco" {...filtro.register('banco')} />
           </label>
         </div>
         {cheques.length ? (
           <div className="overflow-x-auto">
-            <table className="w-full border-collapse text-[15px] [&_td]:border-b [&_td]:border-solid [&_td]:border-[var(--ln2)] [&_td]:px-2 [&_td]:py-2.5 [&_th]:px-2 [&_th]:py-[7px] [&_th]:text-left [&_th]:text-[13px] [&_th]:text-[var(--mu)]">
+            <table className={tabla}>
               <thead><tr>{['Número', 'Banco', 'Entregado por', 'Tipo', 'Recibido', 'Importe', 'Estado'].map((titulo) => <th key={titulo} scope="col">{titulo}</th>)}</tr></thead>
               <tbody>
                 {cheques.map((cheque) => (
@@ -67,24 +52,24 @@ function Historial({ vista }: { vista: VistaCheques }) {
                     <td>{cheque.socio}</td>
                     <td>{cheque.medio}</td>
                     <td>{cheque.fecha}</td>
-                    <td className="whitespace-nowrap">{cheque.monto}</td>
+                    <td>{cheque.monto}</td>
                     <td>
                       {cheque.anulado ? (
-                        <span className={cheque.rechazoAplicado ? 'text-[var(--bad)]' : 'text-[var(--mu)]'}>
+                        <span className={etiqueta(cheque.rechazoAplicado ? 'mala' : 'neutra')}>
                           {cheque.rechazoAplicado ? 'Rechazado · cobro revertido' : 'Cobro anulado'}
                         </span>
                       ) : (
-                        <div className="grid gap-1">
-                          <label className="grid gap-1 text-[13px] text-[var(--mu)]">
-                            Estado del cheque
+                        <>
+                          <label className={rotulo}>
+                            <span className="text-[13px] text-[var(--mu)]">Estado del cheque</span>
                             <select className={campo} aria-label={`Estado del cheque ${cheque.numero || 'sin número'}`} value={cheque.estado}
-                              onChange={(event) => vista.actualizar(cheque.id, event.target.value as Estado)}>
-                              {Object.entries(estados).map(([id, nombre]) => <option key={id} value={id}>{nombre}</option>)}
+                              disabled={operacion.bloqueado} onChange={(event) => actualizar(cheque, event.target.value as EstadoCheque)}>
+                              {Object.entries(estadosCheque).map(([id, nombre]) => <option key={id} value={id}>{nombre}</option>)}
                             </select>
                           </label>
-                          {cheque.estado === 'rechazado' && <button type="button" className={campo + ' cursor-pointer hover:bg-[var(--sf2)]'} onClick={() => vista.actualizar(cheque.id, 'rechazado')}>Revertir cobro rechazado</button>}
-                          {cheque.depositado && <span className="text-xs text-[var(--mu)]">Depositado</span>}
-                        </div>
+                          {cheque.estado === 'rechazado' && <button type="button" className={boton('normal', 'sm')} disabled={operacion.bloqueado} onClick={() => actualizar(cheque, 'rechazado')}>Revertir cobro rechazado</button>}
+                          {cheque.depositado && <span className={etiqueta()}>Depositado</span>}
+                        </>
                       )}
                     </td>
                   </tr>
@@ -92,9 +77,9 @@ function Historial({ vista }: { vista: VistaCheques }) {
               </tbody>
             </table>
           </div>
-        ) : <p className="px-1 py-3.5 text-sm text-[var(--mu)]">No se encontraron cheques.</p>}
+        ) : <div className={vacio}>No se encontraron cheques.</div>}
       </div>
-      <p className="text-sm text-[var(--mu)]">Al marcar un cheque como rechazado, se revierte su cobro y los conceptos vuelven a quedar pendientes. Si el socio paga de otra forma, registrá un nuevo cobro. El cheque rechazado permanece en el historial.</p>
+      <p className={nota}>Al marcar un cheque como rechazado, se revierte su cobro y los conceptos vuelven a quedar pendientes. Si el socio paga de otra forma, registrá un nuevo cobro. El cheque rechazado permanece en el historial.</p>
     </section>
   );
 }

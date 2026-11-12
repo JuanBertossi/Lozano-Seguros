@@ -1,47 +1,45 @@
-import { usePanelEvent } from '../../../shared/hooks/usePanelEvent';
-import { useListadoToto, useOperacionTotoSegura } from '../hooks/useToto';
-import type { CalculoToto, JuegoToto, ListadoTotoServidor } from '../api/toto.service';
-import type { DatosAgencia } from '../../../shared/lib/supabase.service';
-const usarSql=import.meta.env.VITE_TOTO_SQL==='true';
-(window as Window & { totoServidor?: boolean }).totoServidor=usarSql;
-
-type Detalle = {total:string;com:string;neto:string;prem:string;premAg:string;gral:string;pago:string;debe:string;signoGral:number;signoDebe:number};
-type Fila = Detalle & {id:string;fecha:string;valores:{monto:string;concurso:number|null}[];estado:string;saldado:boolean;pagos:number};
-type PdfToto={per:string;head:string[];body:string[][];foot:string[];res:string[];archivo:string};
-type Vista = {obtenerRevision:()=>number;bloquear:()=>void;desbloquear:()=>void;sincronizar:(datos:DatosAgencia)=>void;periodoClave:string;periodo:'dia'|'mes'|'todo';titulo:string;subtitulo:string;irHoy:boolean;anteriorDeshabilitado:boolean;siguienteDeshabilitado:boolean;porcentaje:number;resumen:[string,string,string][];pagado:string;deuda:string;hayDeuda:boolean;periodoBajo:string;juegos:string[];filas:Fila[];total:Detalle & {valores:string[]};cantidadPagados:number;cargar:()=>void;editar:(id:string)=>void;pdf:(datos?:PdfToto)=>void;pago:(id:string,valor:boolean)=>void;pagoParcial:(id:string)=>void;ir:(direccion:number)=>void;hoy:()=>void;cambiar:(periodo:string)=>void};
-const card='mb-4 rounded-[14px] border border-solid border-[var(--ln)] bg-[var(--sf)] px-5 py-[18px]';
-const btn='cursor-pointer rounded-[9px] border border-solid border-[var(--ln)] bg-[var(--sf)] px-3 py-2 text-sm font-medium hover:bg-[var(--sf2)] disabled:cursor-default disabled:opacity-40';
-const cell='border-b border-solid border-[var(--ln2)] px-2 py-2.5 text-right whitespace-nowrap';
-const color=(n:number)=>n<0?'text-[var(--bad)]':n>0?'text-[var(--ok)]':'';
-const claves:JuegoToto[]=['previa','primera','matutina','vespertina','nocturna','turista','quini6','loto'];
-const money=(n:number)=>new Intl.NumberFormat('es-AR',{style:'currency',currency:'ARS',maximumFractionDigits:Number.isInteger(n)?0:2}).format(n);
-const detalle=(c:Pick<CalculoToto,'total'|'com'|'neto'|'prem'|'premAg'|'gral'|'pago'|'debe'>):Detalle=>({total:money(c.total),com:money(c.com),neto:money(c.neto),prem:c.prem?money(c.prem):'—',premAg:c.premAg?money(c.premAg):'—',gral:money(c.gral),pago:c.pago?money(c.pago):'—',debe:c.debe>0?money(c.debe):c.debe<0?'+'+money(-c.debe):'—',signoGral:Math.sign(c.gral),signoDebe:Math.sign(c.debe)});
-function mostrar(p:Vista,s:ListadoTotoServidor):Vista {
- const t=s.totales;return {...p,resumen:[['Total jugado',money(t.total),''],['12%',money(t.com),''],['Total − 12%',money(t.neto),''],['Premios',money(t.prem),''],['Total general',money(t.gral),t.gral<0?'En contra':t.gral>0?'A favor':'—']],pagado:money(t.pago),deuda:money(Math.max(0,t.debe)),hayDeuda:t.debe>0,
-  filas:s.filas.map(f=>({id:f.id,fecha:f.datos.fecha.split('-').reverse().join('/'),valores:claves.map(k=>({monto:f.datos[k]?money(f.datos[k]):'—',concurso:f.concursos[k]})),...detalle(f.calculo),estado:f.calculo.saldado?'r-ok':f.calculo.parcial?'r-par':'r-bad',saldado:f.calculo.saldado,pagos:f.calculo.P.length})),total:{...detalle(t),valores:claves.map(k=>money(s.juegos[k])),prem:money(t.prem),premAg:money(t.premAg)},cantidadPagados:s.cantidadPagados};
-}
-function armarPdf(v:Vista,s:ListadoTotoServidor):PdfToto {
- const filas=new Map(v.filas.map(f=>[f.id,f]));
- const body=[...s.filas].sort((a,b)=>a.datos.fecha.localeCompare(b.datos.fecha)).map(x=>{const f=filas.get(x.id)!;return [f.fecha,...f.valores.map(y=>y.monto+(y.concurso?'\nN° '+y.concurso:'')),f.total,f.com,f.neto,f.prem,f.premAg,f.gral,f.pago,f.debe].map(t=>t.replace(/\u00a0/g,' '))});
- const t=v.total;return {per:v.titulo,head:['Fecha',...v.juegos,'Total','12%','Total − 12%','Premios','Premios agencia (Ema)','Total general','Pagó','Debe'],body,foot:['Total',...t.valores,t.total,t.com,t.neto,t.prem,t.premAg,t.gral,'',''].map(x=>x.replace(/\u00a0/g,' ')),res:[...v.resumen.map(([n,m])=>`${n} ${m}`),`Me pagó ${v.pagado}`,`Me debe ${v.deuda}`].map(x=>x.replace(/\u00a0/g,' ')),archivo:`Toto_Ortega_${v.periodoClave}.pdf`};
-}
+import type { MouseEvent } from 'react';
+import { useNavegacion } from '../../../shared/stores/navegacion.store';
+import { useTotoPagina } from '../hooks/useTotoPagina';
+import { TotoPeriodo } from '../components/TotoPeriodo';
+import { TotoResumen } from '../components/TotoResumen';
+import { TotoTabla } from '../components/TotoTabla';
+import { boton, cabecera, subtitulo, titulo } from '../../../shared/lib/clases';
 
 export function TotoPage() {
-  const v=usePanelEvent<Vista>('agencia:toto');
-  return v?<Contenido v={v}/>:null;
+  const pagina = useNavegacion((estado) => estado.pagina);
+  return pagina === 'toto' ? <Contenido /> : null;
 }
-function Contenido({v:puente}:{v:Vista}) {
-  const operacion=useOperacionTotoSegura(puente);
-  let revision:number|null=null;try{if(usarSql)revision=puente.obtenerRevision()}catch{/* Se espera el guardado anterior. */}
-  const listado=useListadoToto(usarSql&&revision!==null?{p_revision:revision,p_periodo:puente.periodo,p_valor:puente.periodoClave}:null);
-  if(usarSql&&!listado.data)return <div role="status"><p>{revision===null?'Esperá a que termine el guardado y abrí Toto de nuevo.':listado.error instanceof Error?listado.error.message:'Cargando planilla…'}</p>{listado.isError&&<button className={btn} onClick={()=>void listado.refetch()}>Reintentar</button>}</div>;
-  const v=usarSql&&listado.data?mostrar(puente,listado.data):puente;
-  return <section aria-labelledby="titulo-toto" onClickCapture={evento=>{if(usarSql&&operacion.bloqueado&&!(evento.target as Element).closest("[data-retry-toto]")){evento.preventDefault();evento.stopPropagation()}}}>
-    {usarSql&&operacion.error&&<p role="alert" className="mb-3 text-sm text-[var(--bad)]">{operacion.error}</p>}{usarSql&&operacion.bloqueado&&!operacion.procesando&&<button data-retry-toto className={btn} onClick={()=>void operacion.enviar()}>Reintentar operación</button>}
-    <header className="mb-[18px] flex flex-wrap items-end justify-between gap-3.5"><div><h1 id="titulo-toto" className="text-2xl font-semibold text-[var(--toto)]">Toto Ortega</h1><p className="mt-1 text-sm text-[var(--mu)]">Planilla diaria: lo jugado en cada sorteo, menos el {v.porcentaje}% y los premios.</p></div><button className={`${btn} !border-[var(--ac)] !bg-[var(--ac)] text-white`} onClick={v.cargar}>+ Cargar día</button></header>
-    <div className={`${card} flex flex-wrap items-center justify-between gap-3`}><div className="flex items-center gap-2">{v.periodo!=='todo'&&<button className={btn} disabled={v.anteriorDeshabilitado} aria-label={`${v.periodo==='dia'?'Día':'Mes'} anterior`} onClick={()=>v.ir(-1)}>‹</button>}<div className="min-w-36 text-center"><b className="block">{v.titulo}</b><span className="text-sm text-[var(--mu)]">{v.subtitulo}{v.irHoy&&<> · <button className="cursor-pointer border-0 bg-transparent text-[var(--ac)] underline" onClick={v.hoy}>Ir a hoy</button></>}</span></div>{v.periodo!=='todo'&&<button className={btn} disabled={v.siguienteDeshabilitado} aria-label={`${v.periodo==='dia'?'Día':'Mes'} siguiente`} onClick={()=>v.ir(1)}>›</button>}</div><div className="flex rounded-lg bg-[var(--sf2)] p-1">{([['dia','Por día'],['mes','Por mes'],['todo','Todo']] as const).map(([id,n])=><button key={id} className={`cursor-pointer rounded-md border-0 px-3 py-2 text-sm ${v.periodo===id?'bg-[var(--sf)] text-[var(--ink)] shadow-sm':'bg-transparent text-[var(--mu)]'}`} aria-pressed={v.periodo===id} onClick={()=>v.cambiar(id)}>{n}</button>)}</div></div>
-    <div className="mb-4 grid grid-cols-[repeat(auto-fit,minmax(150px,1fr))] gap-3">{v.resumen.map(([nombre,monto,nota],i)=><div key={nombre} className={`${card} !mb-0 !px-4 !py-3.5`}><small className="block text-[13px] text-[var(--mu)]">{nombre}</small><b className={`mt-0.5 block text-[22px] ${i===4?color(v.total.signoGral):''}`}>{monto}</b>{nota&&<span className="text-sm text-[var(--mu)]">{nota}</span>}</div>)}</div>
-    <div className="mb-4 grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-3"><div className={`${card} !mb-0 !px-4 !py-3.5`}><small className="text-[13px] text-[var(--mu)]">Me pagó · {v.periodoBajo}</small><b className="block text-[22px] text-[var(--ok)]">{v.pagado}</b></div><div className={`${card} !mb-0 !px-4 !py-3.5`}><small className="text-[13px] text-[var(--mu)]">Me debe · {v.periodoBajo}</small><b className={`block text-[22px] ${v.hayDeuda?'text-[var(--bad)]':''}`}>{v.deuda}</b><span className="text-sm text-[var(--mu)]">{v.hayDeuda?`Del total − ${v.porcentaje}%, lo que le falta pagar`:'Al día'}</span></div></div>
-    <div className={card}><div className="mb-2.5 flex items-center justify-between"><h2 className="text-lg font-semibold">{v.titulo}</h2>{v.filas.length>0&&<button className={btn} onClick={()=>v.pdf(usarSql&&listado.data?armarPdf(v,listado.data):undefined)}>⬇ PDF</button>}</div>{v.filas.length?<><div className="overflow-x-auto"><table className="w-full border-collapse text-sm"><thead><tr>{['Fecha',...v.juegos,'Total',`${v.porcentaje}%`,`Total − ${v.porcentaje}%`,'Premios','Premios agencia (Ema)','Total general','Pagó','Debe','','Pago'].map((h,i)=><th key={i} className={`${cell} text-[13px] font-medium text-[var(--mu)] ${i===0?'!text-left':''}`}>{h}</th>)}</tr></thead><tbody>{v.filas.map(f=><tr key={f.id} className={`cursor-pointer ${f.estado==='r-ok'?'bg-[var(--ok-row)]':f.estado==='r-bad'?'bg-[var(--bad-row)]':''}`} onClick={()=>v.editar(f.id)}><td className={`${cell} !text-left`}>{f.fecha}</td>{f.valores.map((x,i)=><td key={i} className={cell}>{x.monto}{x.concurso&&<span className="block text-xs text-[var(--mu)]">N° {x.concurso}</span>}</td>)}<td className={`${cell} font-semibold`}>{f.total}</td><td className={`${cell} text-[var(--mu)]`}>{f.com}</td><td className={cell}>{f.neto}</td><td className={cell}>{f.prem}</td><td className={`${cell} text-[var(--toto)]`}>{f.premAg}</td><td className={`${cell} font-semibold ${color(f.signoGral)}`}>{f.gral}</td><td className={cell}>{f.pago}{f.pagos>1&&<span className="block text-xs text-[var(--mu)]">{f.pagos} pagos</span>}</td><td className={`${cell} font-semibold ${color(-f.signoDebe)}`}>{f.debe}</td><td className={cell}><button className={btn} onClick={e=>{e.stopPropagation();v.editar(f.id)}}>Editar</button></td><td className={cell} onClick={e=>e.stopPropagation()}><div className="flex items-center justify-center gap-2"><input type="checkbox" checked={f.saldado} disabled={usarSql&&operacion.bloqueado} onChange={e=>{if(!usarSql)v.pago(f.id,e.target.checked);else void operacion.enviar({p_accion:e.target.checked?'marcar':'desmarcar',p_id:f.id,p_datos:{}})}} aria-label="Pagó todo"/><button className={btn} onClick={()=>v.pagoParcial(f.id)}>Parcial</button></div></td></tr>)}</tbody><tfoot><tr className="font-semibold"><td className={`${cell} !text-left`}>Total</td>{v.total.valores.map((x,i)=><td key={i} className={cell}>{x}</td>)}{[v.total.total,v.total.com,v.total.neto,v.total.prem,v.total.premAg,v.total.gral].map((x,i)=><td key={i} className={cell}>{x}</td>)}<td/><td/><td/><td className={`${cell} text-[var(--mu)]`}>{v.cantidadPagados}/{v.filas.length}</td></tr></tfoot></table></div><div className="mt-3 flex flex-wrap gap-4 text-xs text-[var(--mu)]">{[['var(--ok)','Pagó todo'],['var(--warn)','Pago parcial'],['var(--bad)','No pagó']].map(([c,n])=><span key={n} className="flex items-center gap-1"><i className="size-2 rounded-sm" style={{background:c}}/>{n}</span>)}</div></>:<div className="py-6 text-center text-sm text-[var(--mu)]"><p>{v.periodo==='todo'?'Todavía no cargaste ningún día.':v.periodo==='dia'?`No hay nada cargado ${v.periodoBajo}.`:`No hay días cargados en ${v.periodoBajo}.`}</p><button className={`${btn} mt-3`} onClick={v.cargar}>+ Cargar {v.periodo==='dia'?'este día':'día'}</button></div>}</div>
-  </section>;
+
+function Contenido() {
+  const t = useTotoPagina();
+  const { operacion, periodo, datos } = t;
+  if (!periodo || !datos) {
+    return (
+      <div role="status">
+        <p>{t.error instanceof Error ? t.error.message : 'Cargando planilla…'}</p>
+        {t.error && <button type="button" className={boton()} onClick={t.reintentar}>Reintentar</button>}
+      </div>
+    );
+  }
+  // Mientras una operación está en curso, solo el botón de reintento responde.
+  const bloquearClics = (evento: MouseEvent) => {
+    if (operacion.bloqueado && !(evento.target as Element).closest('[data-retry-toto]')) { evento.preventDefault(); evento.stopPropagation(); }
+  };
+  return (
+    <section aria-labelledby="titulo-toto" onClickCapture={bloquearClics}>
+      {operacion.error && <p role="alert" className="mb-3 text-[13px] text-[var(--bad)]">{operacion.error}</p>}
+      {operacion.bloqueado && !operacion.procesando && <button type="button" data-retry-toto className={boton()} onClick={() => void operacion.enviar()}>Reintentar operación</button>}
+      <header className={cabecera}>
+        <div>
+          <h1 id="titulo-toto" className={`${titulo} border-l-[5px] border-solid border-[var(--toto)] pl-3`}>Toto Ortega</h1>
+          <div className={subtitulo}>Planilla diaria: lo jugado en cada sorteo, menos el {datos.porcentaje}% y los premios.</div>
+        </div>
+        <button type="button" className={boton('primario')} onClick={t.cargar}>+ Cargar día</button>
+      </header>
+      <TotoPeriodo periodo={periodo} subtitulo={t.subtitulo} irHoy={t.irHoy} anteriorDeshabilitado={t.anteriorDeshabilitado} siguienteDeshabilitado={t.siguienteDeshabilitado} onIr={t.ir} onHoy={t.hoy} onCambiar={t.cambiar} />
+      <TotoResumen datos={datos} bajo={periodo.bajo} />
+      <TotoTabla datos={datos} titulo={periodo.titulo} bajo={periodo.bajo} vista={periodo.vista} bloqueado={operacion.bloqueado} onCargar={t.cargar} onEditar={t.editar} onPdf={t.pdf} onMarcar={t.marcarPago} onParcial={t.pagoParcial} />
+    </section>
+  );
 }

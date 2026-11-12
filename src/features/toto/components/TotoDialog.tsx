@@ -1,34 +1,101 @@
-import { useEffect,useRef } from 'react';
-import { useForm,useWatch } from 'react-hook-form';
-import { zodResolver } from '@hookform/resolvers/zod';
-import { usePanelEvent } from '../../../shared/hooks/usePanelEvent';
-import { totoSchema,type TotoInput } from '../toto.schema';
-import { useOperacionTotoSegura, useVistaToto } from '../hooks/useToto';
-import type { DatosAgencia } from '../../../shared/lib/supabase.service';
-import type { DatosToto, VistaTotoServidor } from '../api/toto.service';
-type Edicion={id:string|null;inicial:TotoInput;juegos:{id:string;nombre:string}[];obtenerRevision:()=>number;bloquear:()=>void;desbloquear:()=>void;sincronizar:(datos:DatosAgencia)=>void;guardar:(d:TotoInput)=>void;eliminar:()=>void;cerrar:()=>void;concursos:(fecha:string)=>Record<string,string>;vista:(d:TotoInput)=>{duplicado:string;filas:{nombre:string;valor:string;signo:number}[]}};
-const usarSql=import.meta.env.VITE_TOTO_SQL==='true';
-const numero=(s:string)=>s?Number(s.replace(/\./g,'').replace(',','.')):0;
-function datosServidor(d:TotoInput,juegos:{id:string}[]):DatosToto {
- return {fecha:d.fecha,premios:numero(d.premios),premiosAg:numero(d.premiosAg),conc:Object.fromEntries(juegos.map(j=>[j.id,d.concursos[j.id]?Number(d.concursos[j.id]):null])),...Object.fromEntries(juegos.map(j=>[j.id,numero(d.jugadas[j.id]??'')]))} as DatosToto;
+import { useEffect, useRef } from 'react';
+import { Controller } from 'react-hook-form';
+import { useDialogo } from '../../../shared/stores/dialogos.store';
+import type { PlanillaToto } from '../api/toto.service';
+import { useTotoFormulario } from '../hooks/useTotoFormulario';
+import { usePlanillaToto } from '../hooks/useToto';
+import { JUEGOS } from '../lib/totoVista';
+import { DialogoCarga } from '../../../shared/components/DialogoCarga';
+import { boton, campoDineroDlg, campoDlg, cuerpoDlg, dialogo, erroresDlg, fila2, listaDlg, pieDlg, rotuloDlg, rotuloSueltoDlg, tituloDlg } from '../../../shared/lib/clases';
+import { abrirModal } from '../../../shared/lib/dialogo';
+
+// Número de concurso de cada sorteo (`input.tcin` de la maqueta).
+const concurso = 'w-[62px] rounded-[5px] border border-solid border-[var(--ln2)] bg-[var(--sf2)] px-[5px] py-0.5 text-right font-mono text-[11px] font-normal text-[var(--mu)] focus:border-[var(--ln)] focus:text-[var(--ink)] focus:outline-none';
+const aclaracion = 'text-center text-[14.5px] text-[var(--mu)]';
+const error = 'text-[14.5px] text-[var(--bad)]';
+
+export function TotoDialog() {
+  const parametros = useDialogo('toto');
+  return parametros && <CargaToto key={parametros.id ?? 'nuevo'} id={parametros.id ?? null} fecha={parametros.fecha} />;
 }
-const money=(n:number)=>new Intl.NumberFormat('es-AR',{style:'currency',currency:'ARS',maximumFractionDigits:Number.isInteger(n)?0:2}).format(n);
-function presentar(v:VistaTotoServidor){const c=v.calculo;const filas=[{nombre:'Total',valor:money(c.total),signo:0},{nombre:'− 12%',valor:money(c.com),signo:0},{nombre:'Total − 12%',valor:money(c.neto),signo:0},{nombre:'− Premios',valor:money(c.prem),signo:0},{nombre:'Total general'+(c.gral<0?' (en contra)':c.gral>0?' (a favor)':''),valor:money(c.gral),signo:Math.sign(c.gral)},{nombre:'Tiene que pagar (total − 12%)',valor:money(c.neto),signo:0}];if(c.pago)filas.push({nombre:'Ya pagó',valor:money(c.pago),signo:0},{nombre:'Debe',valor:c.debe>0?money(c.debe):c.debe<0?'+'+money(-c.debe):'—',signo:-Math.sign(c.debe)});return filas}
-const campo='w-full min-w-0 rounded-lg border border-solid border-[var(--ln)] bg-[var(--sf)] px-3 py-[11px] text-[16px] focus-visible:outline-2 focus-visible:outline-[var(--ac)]';
-const etiqueta='grid gap-1.5 text-[14.5px] font-medium';
-const btn='cursor-pointer rounded-[9px] border border-solid border-[var(--ln)] bg-[var(--sf)] px-4 py-2.5 text-[15px] hover:bg-[var(--sf2)]';
-export function TotoDialog(){const e=usePanelEvent<Edicion>('agencia:editar-toto');return e&&<Formulario key={e.id??'nuevo'} edicion={e}/>}
-function Formulario({edicion:e}:{edicion:Edicion}){
- const dialogo=useRef<HTMLDialogElement>(null),{register,handleSubmit,setValue,getFieldState,control,formState:{errors}}=useForm<TotoInput>({resolver:zodResolver(totoSchema),defaultValues:e.inicial});const datos=useWatch({control}) as TotoInput,fecha=register('fecha');
- useEffect(()=>{dialogo.current?.showModal()},[]);
- const operacion=useOperacionTotoSegura(e);
- const valores={...e.inicial,...datos,jugadas:{...e.inicial.jugadas,...datos.jugadas},concursos:{...e.inicial.concursos,...datos.concursos}};
- let revision:number|null=null;try{if(usarSql)revision=e.obtenerRevision?.()??null}catch{/* Se muestra el error de revisión al guardar. */}
- const valida=totoSchema.safeParse(valores).success;
- const remota=useVistaToto(usarSql&&revision!==null&&valida?{p_revision:revision,p_fecha:valores.fecha,p_datos:datosServidor(valores,e.juegos),p_id:e.id}:null);
- const vista=usarSql?{duplicado:remota.data?.duplicado?`Ojo: ya hay un día cargado el ${valores.fecha.split('-').reverse().join('/')}. Si guardás, queda otra fila con esa fecha.`:'',filas:remota.data?presentar(remota.data):[]} :e.vista(valores);
- useEffect(()=>{if(!usarSql||!remota.data)return;for(const juego of e.juegos)if(!getFieldState(`concursos.${juego.id}`).isDirty)setValue(`concursos.${juego.id}`,String(remota.data.concursosActuales[juego.id as keyof typeof remota.data.concursosActuales]??''))},[remota.data,e.juegos,getFieldState,setValue]);
- return <dialog ref={dialogo} aria-labelledby="titulo-toto-dialog" className="m-auto max-h-[90vh] w-[calc(100%-28px)] max-w-[700px] overflow-auto rounded-2xl border-0 bg-[var(--sf)] p-0 text-[var(--ink)] shadow-2xl backdrop:bg-[#0a0c0f73]" onCancel={event=>{event.preventDefault();if(!operacion.bloqueado)e.cerrar()}}><div className="px-6">{usarSql&&remota.error instanceof Error&&<p role="alert" className="text-sm text-[var(--bad)]">{remota.error.message}</p>}{usarSql&&remota.isError&&<button type="button" className={btn} onClick={()=>void remota.refetch()}>Reintentar consulta</button>}{usarSql&&operacion.error&&<p role="alert" className="text-sm text-[var(--bad)]">{operacion.error}</p>}{usarSql&&operacion.bloqueado&&!operacion.procesando&&<button type="button" className={btn} onClick={()=>void operacion.enviar()}>Reintentar operación</button>}</div><form inert={usarSql&&operacion.bloqueado} onSubmit={handleSubmit(d=>{if(usarSql)void operacion.enviar({p_accion:e.id?'editar':'crear',p_id:e.id,p_datos:{...datosServidor(d,e.juegos)}});else e.guardar(d)})} noValidate><div className="grid gap-3.5 px-6 pb-5 pt-[22px] max-[820px]:px-4"><h2 id="titulo-toto-dialog" className="text-[22px] font-semibold">{e.id?'Editar día · Toto Ortega':'Cargar día · Toto Ortega'}</h2><label className={etiqueta}>Fecha<input className={campo} type="date" {...fecha} onChange={event=>{void fecha.onChange(event);if(!usarSql){const sugeridos=e.concursos(event.target.value);for(const juego of e.juegos)if(!getFieldState(`concursos.${juego.id}`).isDirty)setValue(`concursos.${juego.id}`,sugeridos[juego.id]||'')}}}/></label><span className="text-sm font-medium">Jugado por sorteo</span>
- <div className="grid grid-cols-2 gap-3 min-[560px]:grid-cols-4">{e.juegos.map(j=><div key={j.id}><div className="flex items-center justify-between gap-1 text-sm"><label htmlFor={`toto-${j.id}`}>{j.nombre}</label><label className="flex items-center gap-1 text-xs text-[var(--mu)]">N°<input aria-label={`N° de concurso ${j.nombre}`} className="w-14 rounded-md border border-solid border-[var(--ln)] bg-[var(--sf)] p-1" inputMode="numeric" {...register(`concursos.${j.id}`)}/></label></div><input id={`toto-${j.id}`} className={`${campo} mt-1`} inputMode="decimal" {...register(`jugadas.${j.id}`)}/></div>)}</div><p className="text-center text-sm text-[var(--mu)]">El N° de concurso de cada sorteo se completa solo: sube 1 en cada día de sorteo (se cambia en Ajustes). Lo podés cambiar.</p><div className="grid gap-3 min-[560px]:grid-cols-2"><label className={etiqueta}>Premios pagados<input className={campo} inputMode="decimal" {...register('premios')}/></label><label className={etiqueta}>Premios pagados por agencia (Ema)<input className={campo} inputMode="decimal" {...register('premiosAg')}/></label></div><p className="text-center text-sm text-[var(--mu)]">Los premios de la agencia son solo para anotar: no se restan de ninguna cuenta.</p>{vista.duplicado&&<p role="status" className="text-center text-sm text-[var(--warn)]">{vista.duplicado}</p>}<div className="rounded-xl border border-solid border-[var(--ln)] p-3">{vista.filas.map((x,i)=><div key={i} className="flex justify-between gap-3 border-b border-solid border-[var(--ln2)] py-2 last:border-0"><span>{x.nombre}</span><b className={x.signo<0?'text-[var(--bad)]':x.signo>0?'text-[var(--ok)]':''}>{x.valor}</b></div>)}</div>
- {(errors.fecha||errors.premios||errors.premiosAg||errors.jugadas||errors.concursos)&&<p role="alert" className="text-sm text-[var(--bad)]">Revisá la fecha, los montos y los números de concurso.</p>}</div><div className="flex items-center justify-between border-t border-solid border-[var(--ln)] px-6 py-4"><span>{e.id&&<button type="button" disabled={usarSql&&operacion.bloqueado} className={`${btn} text-[var(--bad)] disabled:opacity-40`} onClick={()=>{if(!usarSql)e.eliminar();else if(e.id&&confirm('¿Eliminar este día de la planilla?'))void operacion.enviar({p_accion:'eliminar',p_id:e.id,p_datos:{}})}}>Eliminar</button>}</span><div className="flex gap-2"><button type="button" className={btn} disabled={operacion.bloqueado} onClick={e.cerrar}>Cancelar</button><button disabled={usarSql&&(operacion.bloqueado||remota.isFetching||!remota.data)} className={`${btn} !border-[var(--ac)] !bg-[var(--ac)] text-white disabled:opacity-40`}>Guardar</button></div></div></form></dialog>;
+
+// Al editar hay que leer la planilla antes de armar el formulario: sus valores iniciales salen de ahí.
+function CargaToto({ id, fecha }: { id: string | null; fecha?: string }) {
+  const planilla = usePlanillaToto(id);
+  if (id && !planilla.data) return planilla.error instanceof Error ? <DialogoCarga error={planilla.error.message} /> : null;
+  return <Formulario id={id} fecha={fecha} planilla={planilla.data} />;
+}
+
+function Formulario({ id, fecha, planilla }: { id: string | null; fecha?: string; planilla?: PlanillaToto }) {
+  const referencia = useRef<HTMLDialogElement>(null);
+  const f = useTotoFormulario({ id, fecha, planilla });
+  const { operacion, errores } = f;
+  useEffect(() => { abrirModal(referencia.current); }, []);
+  return (
+    <dialog ref={referencia} aria-labelledby="titulo-toto-dialog" className={dialogo} tabIndex={-1} onCancel={(evento) => { evento.preventDefault(); if (!operacion.bloqueado) f.cerrar(); }}>
+      <div className={erroresDlg}>
+        {f.errorConsulta && <p role="alert" className={error}>{f.errorConsulta}</p>}
+        {f.errorConsulta && <button type="button" className={boton()} onClick={f.reintentarConsulta}>Reintentar consulta</button>}
+        {operacion.error && <p role="alert" className={error}>{operacion.error}</p>}
+        {operacion.bloqueado && !operacion.procesando && <button type="button" className={boton()} onClick={() => void operacion.enviar()}>Reintentar operación</button>}
+      </div>
+      <form className="contents" inert={operacion.bloqueado} onSubmit={(evento) => void f.guardar(evento)} noValidate>
+        <div className={cuerpoDlg}>
+          <h2 id="titulo-toto-dialog" className={tituloDlg}>{id ? 'Editar día · Toto Ortega' : 'Cargar día · Toto Ortega'}</h2>
+          <label className={rotuloDlg}>Fecha<input className={campoDlg} type="date" {...f.register('fecha')} /></label>
+          <span className={rotuloSueltoDlg}>Jugado por sorteo</span>
+          <div className={fila2}>
+            {JUEGOS.map((j) => (
+              <label key={j.id} className={rotuloDlg} htmlFor={`toto-${j.id}`}>
+                <span className="flex items-center justify-between gap-1.5">
+                  <span>{j.nombre}</span>
+                  <span className="inline-flex items-center gap-[3px] text-[11.5px] text-[var(--mu)]">N°
+                    <Controller control={f.control} name={`concursos.${j.id}`} render={({ field }) => (
+                      <input ref={field.ref} name={field.name} onBlur={field.onBlur} aria-label={`N° de concurso ${j.nombre}`} title="N° de concurso" inputMode="numeric" className={concurso}
+                        value={(field.value as string | undefined) ?? String(f.sugeridos?.[j.id] ?? '')}
+                        onChange={(evento) => field.onChange(evento.target.value.replace(/\D/g, ''))} />
+                    )} />
+                  </span>
+                </span>
+                <input id={`toto-${j.id}`} className={campoDineroDlg} inputMode="decimal" {...f.register(`jugadas.${j.id}`)} />
+              </label>
+            ))}
+          </div>
+          <p className={aclaracion}>El N° de concurso de cada sorteo se completa solo: sube 1 en cada día de sorteo (se cambia en Ajustes). Lo podés cambiar.</p>
+          <div className={fila2}>
+            <label className={rotuloDlg}>Premios pagados<input className={campoDineroDlg} inputMode="decimal" {...f.register('premios')} /></label>
+            <label className={rotuloDlg}>Premios pagados por agencia (Ema)<input className={campoDineroDlg} inputMode="decimal" {...f.register('premiosAg')} /></label>
+          </div>
+          <p className={`${aclaracion} mt-2`}>Los premios de la agencia son solo para anotar: no se restan de ninguna cuenta.</p>
+          {f.duplicado && <p role="status" className="mt-2 text-center text-[14.5px] text-[var(--warn)]">{f.duplicado}</p>}
+          <div className="mt-2.5 mb-4 rounded-[14px] border border-solid border-[var(--ln)] bg-[var(--sf)] px-3.5 py-3">
+            <div className={listaDlg}>
+              {f.filas.map((x, i) => {
+                const conSigno = x.nombre.startsWith('Total general');
+                const color = x.signo < 0 ? 'text-[var(--bad)]' : x.signo > 0 ? 'text-[var(--ok)]' : '';
+                return (
+                  <div key={i}>
+                    {conSigno
+                      ? <span><b>Total general</b> <span className="text-[14.5px] text-[var(--mu)]">{x.nombre.slice('Total general'.length).trim()}</span></span>
+                      : x.nombre === 'Debe' ? <span><b>Debe</b></span> : <span>{x.nombre}</span>}
+                    {conSigno || x.nombre === 'Debe'
+                      ? (x.valor === '—' ? <span className="text-[var(--mu)]">{x.valor}</span> : <span className={`font-semibold ${color}`}>{x.valor}</span>)
+                      : <b>{x.valor}</b>}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+          {(errores.fecha || errores.premios || errores.premiosAg || errores.jugadas || errores.concursos) && <p role="alert" className={error}>Revisá la fecha, los montos y los números de concurso.</p>}
+        </div>
+        <div className={pieDlg}>
+          {id ? <button type="button" disabled={operacion.bloqueado} className={boton('peligro', 'pie')} onClick={f.eliminar}>Eliminar</button> : <span />}
+          <div className="flex flex-wrap gap-2">
+            <button type="button" className={boton('normal', 'pie')} disabled={operacion.bloqueado} onClick={f.cerrar}>Cancelar</button>
+            <button disabled={!f.puedeGuardar} className={boton('primario', 'pie')}>Guardar</button>
+          </div>
+        </div>
+      </form>
+    </dialog>
+  );
 }

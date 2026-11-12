@@ -1,126 +1,87 @@
 import { useEffect, useRef } from 'react';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm } from 'react-hook-form';
-import { usePanelEvent } from '../../../shared/hooks/usePanelEvent';
+import { useDialogo } from '../../../shared/stores/dialogos.store';
 import { socioSchema, type SocioInput } from '../socio.schema';
-import { useOperacionSocioSegura, useProximoNumeroSocio } from '../hooks/useSocios';
-import type { ResultadoSocio } from '../api/socios.service';
-import type { DatosAgencia } from '../../../shared/lib/supabase.service';
+import { useSocioFormulario } from '../hooks/useSocioFormulario';
+import { btnMd, btnMdD, btnMdP, campoF, cuerpo, dialogo as marco, errores, etiquetaF, fila, notaF, opcionF, opcionesF, pie, titulo } from './estilos';
 
-const usarSql = import.meta.env.VITE_SOCIOS_SQL === 'true';
+const mono = ' font-mono font-semibold tracking-[.02em]';
+type Formulario = ReturnType<typeof useSocioFormulario>;
 
-interface EdicionSocio {
-  id: string | null;
-  inicial: SocioInput;
-  obtenerRevision?: () => number;
-  bloquear?: () => void;
-  desbloquear?: () => void;
-  sincronizar?: (datos: DatosAgencia, resultado: ResultadoSocio) => void;
-  guardar: (datos: SocioInput) => void;
-  eliminar: () => void;
-  cerrar: () => void;
+function CamposSocio({ id, inicial, formulario }: { id: string | undefined; inicial: SocioInput; formulario: Formulario }) {
+  const { register, handleSubmit, formState: { errors } } = useForm<SocioInput>({ resolver: zodResolver(socioSchema), defaultValues: inicial });
+  return (
+    <form inert={formulario.operacion.bloqueado} onSubmit={handleSubmit(formulario.guardar)} noValidate>
+      <div className={cuerpo}>
+        <h2 id="titulo-edicion-socio" className={titulo}>{id ? 'Editar socio' : 'Nuevo socio'}</h2>
+        <div className={fila}>
+          <label className={etiquetaF}>
+            Nombre y apellido
+            <input className={campoF} autoFocus {...register('nombre')} />
+            {errors.nombre && <span className="text-sm text-[var(--bad)]" role="alert">{errors.nombre.message}</span>}
+          </label>
+          <label className={etiquetaF}>N° de socio<input className={campoF + mono} {...register('nro')} /></label>
+        </div>
+        <label className={etiquetaF}>Celular<input className={campoF} inputMode="tel" placeholder="Ej: 3544 551122 (sin 0, sin 15, sin +54)" {...register('tel')} /></label>
+        <label className={etiquetaF}>Dirección<input className={campoF} {...register('dir')} /></label>
+        {id ? (
+          <>
+            <details className="mb-3 mt-1 text-[13px] text-[var(--mu)]" open={Boolean(errors.favor) || undefined}>
+              <summary className="mb-2 cursor-pointer">Corregir saldo a favor a mano</summary>
+              <label className={etiquetaF}>Saldo a favor<input className={campoF + ' font-semibold'} inputMode="decimal" {...register('favor')} /></label>
+              {errors.favor && <p className="mt-2 text-sm text-[var(--bad)]" role="alert">{errors.favor.message}</p>}
+            </details>
+            <div className={opcionesF}><label className={opcionF}><input type="checkbox" {...register('archivado')} />Archivar (ya no es socio)</label></div>
+          </>
+        ) : <p className={notaF}>Después de guardarlo, desde su ficha le agregás seguros, Quini 6, lotería, quiniela o rifa.</p>}
+      </div>
+      <div className={pie}>
+        {id ? <button type="button" className={btnMdD} onClick={formulario.eliminar}>Eliminar</button> : <span />}
+        <div className="flex flex-wrap gap-2">
+          <button type="button" className={btnMd} onClick={formulario.cerrar}>Cancelar</button>
+          <button type="submit" className={btnMdP}>Guardar</button>
+        </div>
+      </div>
+    </form>
+  );
 }
 
-const campo = 'w-full rounded-lg border border-solid border-[var(--ln)] bg-[var(--sf)] px-3 py-[11px] text-[16.5px] focus-visible:outline-2 focus-visible:outline-[var(--ac)]';
-const etiqueta = 'grid gap-1.5 text-[14.5px] font-medium';
-const boton = 'cursor-pointer rounded-[9px] border border-solid border-[var(--ln)] bg-[var(--sf)] px-4 py-2.5 text-[15.5px] font-medium hover:bg-[var(--sf2)]';
-
-function FormularioSocio({ edicion }: { edicion: EdicionSocio }) {
+function DialogoSocio({ id }: { id: string | undefined }) {
   const dialogo = useRef<HTMLDialogElement>(null);
-  const { register, handleSubmit, setValue, getFieldState, formState: { errors } } = useForm<SocioInput>({
-    resolver: zodResolver(socioSchema),
-    defaultValues: edicion.inicial,
-  });
-  const puenteCompleto = Boolean(edicion.obtenerRevision && edicion.bloquear && edicion.desbloquear && edicion.sincronizar);
-  let revision: number | null = null;
-  try { if (usarSql && puenteCompleto) revision = edicion.obtenerRevision!(); } catch { /* Esperar guardado pendiente. */ }
-  const proximo = useProximoNumeroSocio(usarSql && !edicion.id ? revision : null);
-  const operacion = useOperacionSocioSegura({
-    obtenerRevision: () => { if (!edicion.obtenerRevision) throw new Error('La conexión de socios todavía no está disponible.'); return edicion.obtenerRevision(); },
-    bloquear: () => { if (!edicion.bloquear) throw new Error('La conexión de socios todavía no está disponible.'); edicion.bloquear(); },
-    desbloquear: () => edicion.desbloquear?.(),
-    sincronizar: (datos, resultado) => { if (!edicion.sincronizar) throw new Error('No se pudo actualizar la pantalla.'); edicion.sincronizar(datos, resultado); },
-  });
-
+  const formulario = useSocioFormulario(id);
+  const { operacion } = formulario;
   useEffect(() => {
     dialogo.current?.showModal();
   }, []);
-  useEffect(() => {
-    if (usarSql && !edicion.id && proximo.data !== undefined && !getFieldState('nro').isDirty) setValue('nro', proximo.data);
-  }, [edicion.id, getFieldState, proximo.data, setValue]);
-
-  function guardar(datos: SocioInput) {
-    if (!usarSql) { edicion.guardar(datos); return; }
-    const comunes = { nombre: datos.nombre, nro: datos.nro, tel: datos.tel, dir: datos.dir };
-    if (edicion.id) {
-      const favor = datos.favor ? Number(datos.favor.replace(/\./g, '').replace(',', '.')) : 0;
-      void operacion.enviar({ p_accion: 'editar', p_id: edicion.id, p_datos: { ...comunes, favor, archivado: datos.archivado } });
-    } else void operacion.enviar({ p_accion: 'crear', p_id: null, p_datos: comunes });
-  }
-
-  function eliminar() {
-    if (!usarSql) { edicion.eliminar(); return; }
-    if (edicion.id && confirm('¿Eliminar el socio y todo lo suyo (seguros, jugadas, números, rifas)? Si solo dejó de ser socio, mejor archivalo.'))
-      void operacion.enviar({ p_accion: 'eliminar', p_id: edicion.id, p_datos: {} });
-  }
 
   return (
     <dialog ref={dialogo} aria-labelledby="titulo-edicion-socio" id="socio-dialog"
-      className="m-auto max-h-[90vh] w-[calc(100%-28px)] max-w-[700px] overflow-auto rounded-2xl border-0 bg-[var(--sf)] p-0 text-[var(--ink)] shadow-2xl backdrop:bg-[#0a0c0f73]"
-      onCancel={(event) => { event.preventDefault(); if (!operacion.bloqueado) edicion.cerrar(); }}
+      className={marco}
+      onCancel={(event) => { event.preventDefault(); if (!operacion.bloqueado) formulario.cerrar(); }}
       onClick={(event) => {
         if (!operacion.bloqueado && event.target === event.currentTarget) {
           const rect = event.currentTarget.getBoundingClientRect();
-          if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) edicion.cerrar();
+          if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) formulario.cerrar();
         }
       }}>
-      <div className="px-6">
-        {usarSql && !puenteCompleto && <p role="alert" className="text-sm text-[var(--bad)]">La conexión de socios todavía no está disponible.</p>}
-        {usarSql && proximo.error instanceof Error && <p role="alert" className="text-sm text-[var(--bad)]">{proximo.error.message}</p>}
-        {usarSql && proximo.isError && <button type="button" className={boton} onClick={() => void proximo.refetch()}>Reintentar consulta</button>}
-        {usarSql && operacion.error && <p role="alert" className="text-sm text-[var(--bad)]">{operacion.error}</p>}
-        {usarSql && operacion.bloqueado && !operacion.procesando && <button type="button" className={boton} onClick={() => void operacion.enviar()}>Reintentar operación</button>}
+      <div className={errores}>
+        {formulario.errorCarga && <p role="alert" className="text-sm text-[var(--bad)]">{formulario.errorCarga}</p>}
+        {formulario.cargaFallida && <button type="button" className={btnMd} onClick={formulario.reintentarCarga}>Reintentar consulta</button>}
+        {operacion.error && <p role="alert" className="text-sm text-[var(--bad)]">{operacion.error}</p>}
+        {operacion.bloqueado && !operacion.procesando && <button type="button" className={btnMd} onClick={() => void operacion.enviar()}>Reintentar operación</button>}
       </div>
-      <form inert={usarSql && operacion.bloqueado} onSubmit={handleSubmit(guardar)} noValidate>
-        <div className="grid gap-3.5 px-6 pt-[22px] pb-5 max-[820px]:px-4">
-          <h2 id="titulo-edicion-socio" className="text-[22px] font-semibold">{edicion.id ? 'Editar socio' : 'Nuevo socio'}</h2>
-          <div className="grid grid-cols-2 gap-3 max-[560px]:grid-cols-1">
-            <label className={etiqueta}>
-              Nombre y apellido
-              <input className={campo} autoFocus {...register('nombre')} />
-              {errors.nombre && <span className="text-sm text-[var(--bad)]" role="alert">{errors.nombre.message}</span>}
-            </label>
-            <label className={etiqueta}>N° de socio<input className={campo + ' font-mono'} {...register('nro')} /></label>
-          </div>
-          <label className={etiqueta}>Celular<input className={campo} inputMode="tel" placeholder="Ej: 3544 551122 (sin 0, sin 15, sin +54)" {...register('tel')} /></label>
-          <label className={etiqueta}>Dirección<input className={campo} {...register('dir')} /></label>
-          {edicion.id ? (
-            <>
-              <details className="rounded-lg border border-solid border-[var(--ln)] p-3" open={Boolean(errors.favor) || undefined}>
-                <summary className="cursor-pointer">Corregir saldo a favor a mano</summary>
-                <label className={etiqueta + ' mt-2'}>Saldo a favor<input className={campo} inputMode="decimal" {...register('favor')} /></label>
-                {errors.favor && <p className="mt-2 text-sm text-[var(--bad)]" role="alert">{errors.favor.message}</p>}
-              </details>
-              <label className="flex items-center gap-2 text-[15.5px]">
-                <input type="checkbox" className="accent-[var(--ac)]" {...register('archivado')} />
-                Archivar (ya no es socio)
-              </label>
-            </>
-          ) : <p className="text-[14.5px] text-[var(--mu)]">Después de guardarlo, desde su ficha le agregás seguros, Quini 6, lotería, quiniela o rifa.</p>}
-        </div>
-        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-solid border-[var(--ln)] px-6 py-3 max-[820px]:px-4">
-          <div>{edicion.id && <button type="button" disabled={usarSql && !puenteCompleto} className={boton + ' text-[var(--bad)] disabled:opacity-40'} onClick={eliminar}>Eliminar</button>}</div>
-          <div className="flex gap-2">
-            <button type="button" className={boton} onClick={edicion.cerrar}>Cancelar</button>
-            <button type="submit" disabled={usarSql && (!puenteCompleto || revision === null || (!edicion.id && (proximo.isFetching || proximo.isError || proximo.data === undefined)))} className="cursor-pointer rounded-[9px] border border-solid border-[var(--ac)] bg-[var(--ac)] px-4 py-2.5 text-[15.5px] font-medium text-white hover:brightness-110 disabled:opacity-40">Guardar</button>
-          </div>
-        </div>
-      </form>
+      {formulario.inicial
+        ? <CamposSocio id={id} inicial={formulario.inicial} formulario={formulario} />
+        : <form onSubmit={(event) => event.preventDefault()}>
+          <div className={cuerpo}><p role="status" id="titulo-edicion-socio" className="text-[var(--mu)]">{formulario.cargaFallida ? 'No se pudo cargar el socio.' : 'Cargando…'}</p></div>
+          <div className={pie}><span /><div className="flex flex-wrap gap-2"><button type="button" className={btnMd} onClick={formulario.cerrar}>Cancelar</button></div></div>
+        </form>}
     </dialog>
   );
 }
 
 export function SocioDialog() {
-  const edicion = usePanelEvent<EdicionSocio>('agencia:editar-socio');
-  return edicion && <FormularioSocio key={edicion.id ?? 'nuevo'} edicion={edicion} />;
+  const abierto = useDialogo('socio');
+  return abierto && <DialogoSocio key={abierto.id ?? 'nuevo'} id={abierto.id} />;
 }

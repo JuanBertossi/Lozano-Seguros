@@ -9,16 +9,9 @@ interface Perfil {
   rol: string;
 }
 
-export interface DatosAgencia {
+export interface Sesion {
   revision: number;
-  estado: Record<string, unknown>;
   perfil: Perfil;
-}
-
-interface Guardado {
-  p_revision: number;
-  p_operacion: string;
-  p_estado: Record<string, unknown>;
 }
 
 const url = import.meta.env.VITE_SUPABASE_URL?.trim();
@@ -28,7 +21,7 @@ const auth = url && key?.startsWith('sb_publishable_')
   : null;
 const api = axios.create({ baseURL: url ? `${url.replace(/\/$/, '')}/rest/v1/rpc/` : undefined, timeout: 20000 });
 export const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-const estadoKey = ['estado-agencia'];
+export const claveSesion = ['sesion'];
 
 export async function rpc<T>(nombre: string, parametros = {}) {
   if (!auth) throw Object.assign(new Error('Falta configurar la conexión con Supabase.'), { code: 'SIN_CONFIGURACION' });
@@ -50,6 +43,8 @@ export async function rpc<T>(nombre: string, parametros = {}) {
   }
 }
 
+export const leerSesion = () => rpc<Sesion>('agencia_sesion');
+
 export const agencia = auth && {
   async ingresar(usuario: string, password: string) {
     const email = `${usuario}@lozano.example.com`;
@@ -64,16 +59,6 @@ export const agencia = auth && {
     } finally {
       queryClient.clear();
     }
-  },
-  leer() {
-    return queryClient.fetchQuery({ queryKey: estadoKey, queryFn: () => rpc<DatosAgencia>('agencia_leer') });
-  },
-  async guardar(parametros: Guardado, restaurar: boolean) {
-    const revision = await queryClient.getMutationCache().build(queryClient, {
-      mutationFn: (entrada: Guardado) => rpc<number>(restaurar ? 'agencia_restaurar' : 'agencia_guardar', entrada),
-    }).execute(parametros);
-    await queryClient.invalidateQueries({ queryKey: estadoKey });
-    return revision;
   },
 };
 

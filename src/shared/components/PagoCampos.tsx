@@ -1,5 +1,6 @@
 import type { UseFormReturn } from 'react-hook-form';
 import type { PagoInput } from '../schemas/pago.schema';
+import { campoDlg, entradaOpcion, fila2, opcionDlg, opciones, rotuloDlg, rotuloSueltoDlg } from '../lib/clases';
 
 const medios = [
   ['efectivo', 'Efectivo'], ['transferencia', 'Transferencia'], ['echeq', 'E-cheq'],
@@ -14,40 +15,44 @@ const detalles = {
 } as const;
 
 const nombres = { cheque: 'del cheque', echeq: 'del e-cheq', transferencia: 'de la transferencia', mp: 'del pago' } as const;
-const campo = 'w-full rounded-lg border border-solid border-[var(--ln)] bg-[var(--sf)] px-3 py-[11px] text-[16.5px] focus-visible:outline-2 focus-visible:outline-[var(--ac)]';
+const error = 'text-[14.5px] text-[var(--bad)]';
 
 export function PagoCampos({ form }: { form: UseFormReturn<PagoInput> }) {
-  const { register, watch, setValue, formState: { errors } } = form;
+  const { register, watch, setValue, formState: { errors, defaultValues } } = form;
   const medio = watch('medio');
   const cargar = watch('cargarDetalle');
   const campos = medio && medio !== 'efectivo' ? detalles[medio] : undefined;
   const seleccionMedio = register('medio');
+  // Como `pgDet` de la maqueta: si el pago ya tenía datos cargados, se ofrecen tildados al cambiar de medio.
+  const teniaDetalle = Boolean(defaultValues?.banco || defaultValues?.nro || defaultValues?.librador || defaultValues?.fcobro);
 
   return (
     <>
-      <label className="grid gap-1.5 text-[14.5px] font-medium">Día que llegó el pago
-        <input type="date" className={campo} {...register('fecha')} />
+      <label className={rotuloDlg}>Día que llegó el pago
+        <input type="date" className={campoDlg} {...register('fecha')} />
       </label>
-      {errors.fecha && <p role="alert" className="text-sm text-[var(--bad)]">{errors.fecha.message}</p>}
-      <fieldset className="m-0 border-0 p-0">
-        <legend className="text-sm font-medium">Medio de pago</legend>
-        <div className="mt-1 flex flex-wrap gap-1.5">
-          {medios.map(([id, nombre]) => (
-            <label key={id} className="flex cursor-pointer items-center gap-1.5 rounded-lg border border-solid border-[var(--ln)] px-[11px] py-[7px] text-sm">
-              <input type="radio" value={id} className="accent-[var(--ac)]" {...seleccionMedio} onChange={(event) => {
-                void seleccionMedio.onChange(event);
-                setValue('cargarDetalle', id === 'cheque' || id === 'echeq');
-              }} />{nombre}
-            </label>
-          ))}
-        </div>
-      </fieldset>
+      {errors.fecha && <p role="alert" className={error}>{errors.fecha.message}</p>}
+      <span className={rotuloSueltoDlg} id="medio-pago">Medio de pago</span>
+      <div className={opciones} role="radiogroup" aria-labelledby="medio-pago">
+        {medios.map(([id, nombre]) => (
+          <label key={id} className={opcionDlg}>
+            <input type="radio" value={id} className={entradaOpcion} {...seleccionMedio} onChange={(event) => {
+              void seleccionMedio.onChange(event);
+              setValue('cargarDetalle', teniaDetalle || id === 'cheque' || id === 'echeq');
+            }} />{nombre}
+          </label>
+        ))}
+      </div>
       {campos && <>
-        <label className="flex items-center gap-1.5 text-sm"><input type="checkbox" className="accent-[var(--ac)]" {...register('cargarDetalle')} />¿Cargar los datos {nombres[medio as keyof typeof nombres]}?</label>
-        {cargar && <div className="grid gap-3 rounded-[10px] border border-solid border-[var(--ln)] p-3 min-[560px]:grid-cols-2">
-          {campos.map(([id, nombre]) => <label key={id} className="grid gap-1.5 text-[14.5px] font-medium">{nombre}<input className={campo} type={id === 'fcobro' ? 'date' : 'text'} {...register(id)} /></label>)}
+        <div className="-mt-1 mb-3 flex flex-wrap gap-1.5">
+          <label className={opcionDlg}><input type="checkbox" className={entradaOpcion} {...register('cargarDetalle')} />¿Cargar los datos {nombres[medio as keyof typeof nombres]}?</label>
+        </div>
+        {cargar && <div className="mb-3 rounded-[10px] border border-solid border-[var(--ln)] px-3 pt-3">
+          <div className={fila2}>
+            {campos.map(([id, nombre]) => <label key={id} className={rotuloDlg}>{nombre}<input className={campoDlg} type={id === 'fcobro' ? 'date' : 'text'} {...register(id)} /></label>)}
+          </div>
         </div>}
-        {errors.fcobro && <p role="alert" className="text-sm text-[var(--bad)]">{errors.fcobro.message}</p>}
+        {errors.fcobro && <p role="alert" className={error}>{errors.fcobro.message}</p>}
       </>}
     </>
   );

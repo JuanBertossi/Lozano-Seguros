@@ -299,8 +299,11 @@ end $$;
 -- Guardado normal. El cliente envía el resultado completo de la operación
 -- con la revisión que leyó. Postgres aplica todas las colecciones o ninguna.
 create function public.agencia_guardar(p_revision bigint, p_operacion uuid, p_estado jsonb)
-returns bigint language sql security definer set search_path = '' as $$
-  select agencia.persistir(p_revision, p_operacion, p_estado, false);
+returns bigint language plpgsql security definer set search_path = '' as $$
+begin
+  perform agencia.exigir_perfil(true);
+  return agencia.persistir(p_revision, p_operacion, p_estado, false);
+end;
 $$;
 
 -- Restauración de un respaldo o reinicio con colecciones vacías.

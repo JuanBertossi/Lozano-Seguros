@@ -1,4 +1,41 @@
-@layer theme, legacy, utilities;
+@layer theme, base, utilities;
 @import "tailwindcss/theme.css" layer(theme);
-@import "../features/dashboard/dashboard.css" layer(legacy);
+@import "tailwindcss/preflight.css" layer(base);
 @import "tailwindcss/utilities.css" layer(utilities);
+
+/* La maqueta usa line-height 1.45 en todos los tamaños de texto. */
+@theme {
+  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  --text-xs--line-height: 1.45;
+  --text-sm--line-height: 1.45;
+  --text-base--line-height: 1.45;
+  --text-lg--line-height: 1.45;
+  --text-xl--line-height: 1.45;
+  --text-2xl--line-height: 1.45;
+  --text-3xl--line-height: 1.45;
+}
+
+/* Entrada de los avisos (toast/snack): suben 30 px y aparecen. Anima `translate` porque Tailwind centra con esa propiedad. */
+@keyframes aviso-in {
+  from { opacity: 0; translate: -50% 30px; }
+}
+
+/* Tokens de color de la maqueta (claro y oscuro) y márgenes de zona segura. */
+@layer base {
+  :root{
+    --ok-row:#EEF8F2;--bad-row:#FDF0EF;--okb:#1E8A5E;--badb:#C8352E;
+    color-scheme:light;--bg:#FFFFFF;--sf:#FFFFFF;--sf2:#F5F6F7;--ink:#1C1F24;--mu:#646A73;--ln:#E2E4E8;--ln2:#EEF0F2;
+    --ac:#0E6B4F;--ac-s:#E2F1EA;--ok:#0E6B4F;--ok-s:#E2F1EA;--warn:#9A5B05;--warn-s:#FBEFD8;--bad:#B3302A;--bad-s:#F9E5E3;
+    --q6:#B3302A;--lot:#0E6B4F;--qui:#1F5F8B;--rifa:#7A4FB8;--seg:#9A5B05;--toto:#3D5A80;
+    box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);
+  }
+  @media(prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;
+    --bg:#15171A;--sf:#1D2024;--sf2:#25292E;--ink:#ECEDEF;--mu:#9AA1AA;--ln:#33383F;--ln2:#2A2E34;
+    --ac:#4CC59A;--ac-s:#17362B;--ok:#4CC59A;--ok-s:#17362B;--warn:#E8AE52;--warn-s:#3A2C14;--bad:#F07A71;--bad-s:#3D1C1A;
+    --q6:#F07A71;--lot:#4CC59A;--qui:#6FB0E0;--rifa:#B898EE;--seg:#E8AE52;--toto:#8FB3DE}}
+  :root[data-theme="dark"]{color-scheme:dark;
+    --bg:#15171A;--sf:#1D2024;--sf2:#25292E;--ink:#ECEDEF;--mu:#9AA1AA;--ln:#33383F;--ln2:#2A2E34;
+    --ac:#4CC59A;--ac-s:#17362B;--ok:#4CC59A;--ok-s:#17362B;--warn:#E8AE52;--warn-s:#3A2C14;--bad:#F07A71;--bad-s:#3D1C1A;
+    --q6:#F07A71;--lot:#4CC59A;--qui:#6FB0E0;--rifa:#B898EE;--seg:#E8AE52;--toto:#8FB3DE}
+  html{scroll-padding-top:env(safe-area-inset-top,0px)}
+}

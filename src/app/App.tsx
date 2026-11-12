@@ -1,6 +1,4 @@
-import { useEffect, useState } from 'react';
 import { LoginPage } from '../features/auth/views/LoginPage';
-import type { LoginInput } from '../features/auth/login.schema';
 import { DashboardPage } from '../features/dashboard/views/DashboardPage';
 import { InicioPage } from '../features/inicio/views/InicioPage';
 import { TotoPage } from '../features/toto/views/TotoPage';
@@ -10,6 +8,7 @@ import { QuiniPage } from '../features/quini/views/QuiniPage';
 import { QuiniDialog } from '../features/quini/components/QuiniDialog';
 import { PlanQuiniDialog } from '../features/quini/components/PlanQuiniDialog';
 import { EspecialQuiniDialog } from '../features/quini/components/EspecialQuiniDialog';
+import { GeneracionQuini } from '../features/quini/components/GeneracionQuini';
 import { LoteriaPage } from '../features/loteria/views/LoteriaPage';
 import { VentaDialog } from '../features/loteria/components/VentaDialog';
 import { QuinielaPage } from '../features/quiniela/views/QuinielaPage';
@@ -33,73 +32,19 @@ import { SeguroDialog } from '../features/seguros/components/SeguroDialog';
 import { PagoDialog } from '../shared/components/PagoDialog';
 import { CobroDialog } from '../features/cobros/components/CobroDialog';
 import { SorteoDialog } from '../features/ajustes/components/SorteoDialog';
-import { agencia, type DatosAgencia } from '../shared/lib/supabase.service';
-import { buscarSocioPorNombre, numeroWhatsApp, proximoNumeroSocio } from '../features/socios/lib/socios.helpers';
-import { abrirChatWhatsApp, esMovil } from '../features/socios/lib/whatsapp';
-
-type VentanaAgencia = Window & {
-  agencia?: typeof agencia;
-  cargarAgencia?: (datos: DatosAgencia) => void;
-  sociosHelpers?: { buscarSocioPorNombre: typeof buscarSocioPorNombre; proximoNumeroSocio: typeof proximoNumeroSocio; numeroWhatsApp: typeof numeroWhatsApp; abrirChatWhatsApp: typeof abrirChatWhatsApp; esMovil: typeof esMovil };
-};
-
-const ventana = window as VentanaAgencia;
-ventana.sociosHelpers = { buscarSocioPorNombre, proximoNumeroSocio, numeroWhatsApp, abrirChatWhatsApp, esMovil };
-let cargaPanel: Promise<void> | undefined;
-
-function cargarPanel() {
-  if (!cargaPanel) {
-    cargaPanel = new Promise<void>((resolve, reject) => {
-      const script = document.createElement('script');
-      script.src = import.meta.env.BASE_URL + 'dashboard-runtime.js';
-      script.onload = () => resolve();
-      script.onerror = () => {
-        script.remove();
-        reject(new Error('No se pudo cargar el panel. Volvé a intentar.'));
-      };
-      document.head.append(script);
-    }).catch((error: unknown) => {
-      cargaPanel = undefined;
-      throw error;
-    });
-  }
-  return cargaPanel;
-}
+import { agencia } from '../shared/lib/supabase.service';
+import { useAuth } from '../shared/stores/auth.store';
+import { useIngreso } from './hooks/useIngreso';
 
 export function App() {
-  const [ingresado, setIngresado] = useState(false);
-  const [mensaje, setMensaje] = useState('');
-
-  useEffect(() => {
-    function alSalir(event: Event) {
-      setIngresado(false);
-      setMensaje((event as CustomEvent<string>).detail);
-    }
-    window.addEventListener('agencia:salir', alSalir);
-    return () => window.removeEventListener('agencia:salir', alSalir);
-  }, []);
-
-  async function ingresar({ usuario, password }: LoginInput) {
-    if (!agencia) return;
-    setMensaje('');
-    try {
-      await agencia.ingresar(usuario, password);
-      const datos = await agencia.leer();
-      ventana.agencia = agencia;
-      await cargarPanel();
-      if (!ventana.cargarAgencia) throw new Error('No se pudo inicializar el panel.');
-      ventana.cargarAgencia(datos);
-      setIngresado(true);
-    } catch (error) {
-      await agencia.salir().catch(() => {});
-      setMensaje(error instanceof Error ? error.message : 'No se pudo iniciar sesión.');
-    }
-  }
+  const ingresado = useAuth((estado) => estado.ingresado);
+  const mensaje = useAuth((estado) => estado.mensaje);
+  const ingresar = useIngreso();
 
   return (
     <>
       <DashboardPage encabezado={<SocioCabecera />}><SocioDetalle /><SocioJugadas /><SocioSeguros /><SocioRifas /><SocioLoteria /><InicioPage /><TotoPage /><QuiniPage /><LoteriaPage /><QuinielaPage /><RifaPage /><SociosPage /><ChequesPage /><AjustesPage /><ActividadPage /><SegurosPage /></DashboardPage>
-      {ingresado && <><SocioDialog /><SorteoDialog /><SeguroDialog /><QuiniDialog /><PlanQuiniDialog /><EspecialQuiniDialog /><QuinielaDialog /><VentaDialog /><RifaDialog /><TotoDialog /><TotoPagoDialog /><WhatsAppDialog /><PagoDialog /><CobroDialog /></>}
+      {ingresado && <><GeneracionQuini /><SocioDialog /><SorteoDialog /><SeguroDialog /><QuiniDialog /><PlanQuiniDialog /><EspecialQuiniDialog /><QuinielaDialog /><VentaDialog /><RifaDialog /><TotoDialog /><TotoPagoDialog /><WhatsAppDialog /><PagoDialog /><CobroDialog /></>}
       {!ingresado && <LoginPage configurado={Boolean(agencia)} mensaje={mensaje} ingresar={ingresar} />}
     </>
   );
