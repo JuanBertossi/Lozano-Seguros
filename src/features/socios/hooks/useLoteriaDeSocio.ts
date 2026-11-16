@@ -21,7 +21,7 @@ export function useLoteriaDeSocio(socioId: string) {
     select: ({ fijos, filas }) => ({
       fijos: fijos.map((f, indice) => ({ indice, numero: String(f.numero), detalle: f.frac ? `${f.frac} ${f.frac > 1 ? 'fracciones' : 'fracción'}` : 'Entero' })),
       filas: filas.map(({ venta, sorteo, fraccionesSorteo, importe, restante }) => ({
-        id: venta.id, sorteo, numero: String(venta.numero),
+        id: venta.id, sorteo, numero: String(venta.numero), progresion: venta.progresion || '—',
         fracciones: fraccionesSorteo !== null && venta.frac >= fraccionesSorteo ? 'Entero' : `${venta.frac}${fraccionesSorteo !== null ? ' de ' + fraccionesSorteo : ''}`,
         importe: moneda(importe), pagado: venta.pagado, abono: venta.abono ? moneda(venta.abono) : '', restante: moneda(restante),
       })),

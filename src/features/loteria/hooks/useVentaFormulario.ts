@@ -44,7 +44,7 @@ export function useVentaFormulario(params: ParametrosVenta, datos: FormularioVen
   const buscarFijo = useFijoSocio();
   const { register, handleSubmit, setValue, getValues, control, formState: { errors } } = useForm<VentaInput>({
     resolver: zodResolver(ventaSchema),
-    defaultValues: { sid: inicial.sid, soId: inicial.soId, numero: inicial.numero, frac: String(inicial.frac), fijo: false },
+    defaultValues: { sid: inicial.sid, soId: inicial.soId, numero: inicial.numero, progresion: inicial.progresion ?? datos.venta?.progresion ?? '', frac: String(inicial.frac), fijo: false },
   });
   const soId = useWatch({ control, name: 'soId' });
   const frac = useWatch({ control, name: 'frac' });
@@ -105,6 +105,7 @@ export function useVentaFormulario(params: ParametrosVenta, datos: FormularioVen
       },
     },
     numero: register('numero'),
+    progresion: register('progresion'),
     frac: register('frac'),
     fijo: register('fijo'),
   };

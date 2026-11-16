@@ -7,11 +7,11 @@ export interface SocioOpcion { id: string; nombre: string; nro: string }
 export interface FormularioVenta {
   sorteos: SorteoLoteria[];
   socios: SocioOpcion[];
-  venta: { id: string; pagado?: boolean } | null;
-  inicial: { sid: string; soId: string; numero: string; frac: number } | null;
+  venta: { id: string; pagado?: boolean; progresion?: string } | null;
+  inicial: { sid: string; soId: string; numero: string; progresion?: string; frac: number } | null;
 }
 export interface ResultadoVenta { revision: number; id: string; liberado: number }
-export interface SolicitudVenta { p_revision: number; p_operacion: string; p_id: string | null; p_datos: { sid: string; soId: string; numero: string; frac: number; fijo: boolean } }
+export interface SolicitudVenta { p_revision: number; p_operacion: string; p_id: string | null; p_datos: { sid: string; soId: string; numero: string; progresion: string; frac: number; fijo: boolean } }
 export interface SolicitudEliminarVenta { p_revision: number; p_operacion: string; p_id: string }
 export interface ResultadoEliminarVenta { revision: number; liberado: number }
 export interface SolicitudPreviaVenta { p_revision: number; p_sorteo_id: string; p_fracciones: number; p_venta_id: string | null }
@@ -20,7 +20,7 @@ export type AccionLoteria = { tipo: 'fijos'; sorteoId: string } | { tipo: 'ofert
 export interface SolicitudAccionLoteria { p_revision: number; p_operacion: string; accion: AccionLoteria }
 export interface ResultadoAccionLoteria { revision: number; cantidad?: number }
 export interface VentaListado {
-  venta: { id: string; sid: string; soId: string; numero: string; frac: number; precio: number; pagado: boolean; abono?: number; por?: string; modPor?: string; modTs?: string };
+  venta: { id: string; sid: string; soId: string; numero: string; progresion?: string; frac: number; precio: number; pagado: boolean; abono?: number; por?: string; modPor?: string; modTs?: string };
   socio: string; nombreAutor: string; nombreEditor: string; importe: number; restante: number;
 }
 export interface ListadoLoteria {

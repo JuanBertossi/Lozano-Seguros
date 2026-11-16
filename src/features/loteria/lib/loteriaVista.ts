@@ -4,7 +4,7 @@ import type { ListadoLoteria } from '../api/loteria.service';
 import { moneda } from '../../../shared/lib/moneda';
 
 export interface FilaLoteria {
-  id: string; sid: string; socio: string; numero: string; fracciones: string; autor: string;
+  id: string; sid: string; socio: string; numero: string; progresion: string; fracciones: string; autor: string;
   importe: string; pagado: boolean; abono: string; restante: string;
 }
 
@@ -39,6 +39,7 @@ export function vistaLoteria(datos: ListadoLoteria, filtro: FiltroPago): VistaLo
         sid: venta.sid,
         socio,
         numero: String(venta.numero),
+        progresion: venta.progresion || '—',
         fracciones: venta.frac >= datos.sorteo.frac ? 'Entero' : `${venta.frac} de ${datos.sorteo.frac}`,
         autor: [
           venta.por === 'auto' ? 'Automático' : venta.por ? `Cargó ${nombreAutor}` : '',

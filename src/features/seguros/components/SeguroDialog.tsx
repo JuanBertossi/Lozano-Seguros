@@ -56,7 +56,7 @@ function Formulario({ id, sid, datos }: { id: string | null; sid: string | null;
             <label className={e.campo}>Vencimiento<input type="date" {...ed.register('venc')} /></label>
           </div>
           <label className={e.campo}>Descripción<input placeholder="Ej: Auto Ford Ka · AB 123 CD · San Cristóbal" {...ed.register('desc')} /></label>
-          <label className={e.campo}>Valor total<input className={e.entradaNegrita} inputMode="decimal" {...ed.register('valor')} /></label>
+          <label className={e.campo}>Valor total<input className={e.entradaNegrita} inputMode="decimal" {...ed.campoValor} /></label>
           <span className={e.rotulo}>Cómo lo va a pagar</span>
           <div className={e.opciones}>{[['contado','Contado'],['3','3 cuotas'],['6','6 cuotas'],['12','12 cuotas']].map(([plan,nombrePlan]) => <label key={plan} className={e.opcion}><input type="radio" value={plan} {...ed.register('plan')} />{nombrePlan}</label>)}</div>
           {id && <p className={e.nota}>Los pagos se marcan con “Registrar pago” o tocando cada cuota. Si cambiás valor, plan o fecha de ingreso, se rearman las cuotas (las pagadas quedan).</p>}

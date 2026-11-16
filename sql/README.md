@@ -9,6 +9,7 @@
    4. `03-panel.sql`. Las lecturas y operaciones de cada pantalla; también retira las funciones heredadas que el panel ya no usa.
    5. `04-permisos.sql`. Único lugar donde se dan permisos de ejecución (solo `authenticated`, y solo sobre las funciones públicas `agencia_*`). Sin este script la API responde `42501`. Volvé a ejecutarlo cada vez que agregues una función.
    6. `05-usuarios.sql`. Crea las cuentas `emanuel` y `valeria` (contraseña `123`, rol administrador) en Authentication y en `agencia.perfiles`. Es solo para probar: cambiá las contraseñas desde Authentication → Users antes de usar datos reales. Si ya creaste cuentas a mano (pasos 2 y 3 de abajo), podés omitirlo.
+   7. `003-cambios-cliente.sql`. Agrega progresión en ventas de lotería y cuotas futuras al PDF de socio. En una base ya instalada, ejecutá solo este archivo; no vuelvas a correr los anteriores.
 
 2. En **Authentication → Users → Add user → Create new user**, elegí un nombre de usuario en minúsculas con letras, números, guiones o guiones bajos. Usá el alias `usuario@lozano.example.com` en el campo Email, ingresá la contraseña y marcá **Auto Confirm User**. Por ejemplo, para el usuario `emanuel`, el alias es `emanuel@lozano.example.com`. Copiá el UUID que le asigna Supabase Auth. Si ya existe una cuenta con un correo distinto, actualizá su correo al alias desde la administración de Auth para conservar el UUID y el perfil.
 3. Habilitá cada cuenta con el siguiente SQL. Usá `administrador` para todas las cuentas actuales.

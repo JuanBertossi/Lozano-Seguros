@@ -29,7 +29,7 @@ export interface DatosPdfSocio {
   socio: { nombre: string; nro: string; tel?: string; dir?: string };
   nombreAgencia: string;
   hoy: string;
-  cuenta: { debe: number; favor: number };
+  cuenta: { debe: number; favor: number; futuro: number; totalPendiente: number };
   movimientos: MovimientoServidor[];
   futuros: MovimientoServidor[];
 }
@@ -45,7 +45,7 @@ export const listarRifasSocio = (revision: number, socioId: string) =>
 
 export interface LoteriaSocio {
   fijos: { numero: string | number; frac: number }[];
-  filas: { venta: { id: string; numero: string | number; frac: number; pagado: boolean; abono?: number }; sorteo: string; fraccionesSorteo: number | null; importe: number; restante: number }[];
+  filas: { venta: { id: string; numero: string | number; progresion?: string; frac: number; pagado: boolean; abono?: number }; sorteo: string; fraccionesSorteo: number | null; importe: number; restante: number }[];
 }
 export const listarLoteriaSocio = (revision: number, socioId: string) =>
   rpc<LoteriaSocio>('agencia_loteria_socio_listar', { p_revision: revision, p_socio_id: socioId });

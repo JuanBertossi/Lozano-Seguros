@@ -75,6 +75,28 @@ export function useEdicionSeguro(id: string | null, sid: string | null, datos: F
     void campoIngreso.onChange(evento);
     if (evento.target.value) setValue('venc', sumarMeses(evento.target.value, 12));
   }
+  const campoValor = register('valor');
+  function cambiarValor(evento: ChangeEvent<HTMLInputElement>) {
+    const entrada = evento.currentTarget;
+    const original = entrada.value;
+    const posicion = entrada.selectionStart ?? original.length;
+    const formatear = (texto: string) => {
+      const partes = texto.replace(/\./g, '').split(',');
+      return partes[0].replace(/\B(?=(\d{3})+(?!\d))/g, '.') + (partes.length > 1 ? ',' + partes.slice(1).join(',') : '');
+    };
+    const valor = formatear(original);
+    const cursor = formatear(original.slice(0, posicion)).length;
+    entrada.value = valor;
+    void campoValor.onChange(evento);
+    entrada.setSelectionRange(cursor, cursor);
+  }
+  function formatearValor(evento: ChangeEvent<HTMLInputElement>) {
+    void campoValor.onBlur(evento);
+    const texto = evento.currentTarget.value.trim();
+    if (!texto) return;
+    const monto = leerMonto(texto);
+    if (monto > 0) setValue('valor', numeroEditable(monto), { shouldValidate: true });
+  }
   function guardar(valores: SeguroInput) {
     void operacion.enviar({ p_accion: id ? 'editar' : 'crear', p_id: id, p_datos: { ...valores, valor: leerMonto(valores.valor) } });
   }
@@ -85,6 +107,7 @@ export function useEdicionSeguro(id: string | null, sid: string | null, datos: F
     register, errores: Object.values(errors), operacion, socios, socio, socioFijo, nuevo, cerrar, elegirSocio, eliminar,
     campoSocio: { ...campoSocio, onChange: cambiarSocio },
     campoIngreso: { ...campoIngreso, onChange: cambiarIngreso },
+    campoValor: { ...campoValor, onChange: cambiarValor, onBlur: formatearValor },
     cancelarNuevo: () => setNuevo(false),
     enviar: handleSubmit(guardar),
   };
