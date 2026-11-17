@@ -60,7 +60,7 @@ function Contenido({ nombre }: { nombre: string }) {
       <div aria-label="Navegación principal" className="contents">
         <div className="flex items-center gap-2.5 px-2.5 pt-1.5 pb-3.5 max-[820px]:hidden">
           <div aria-hidden="true" className="inline-grid grid-cols-[repeat(3,7px)] gap-0.5">{Array.from({ length: 6 }, (_, i) => <span key={i} className={`size-[7px] rounded-full ${i === 1 ? 'bg-[var(--ac)]' : 'bg-[var(--ink)]'}`} />)}</div>
-          <div><b className="block text-[15px]">{nombre}</b><span className="block text-xs text-[var(--mu)]">Socios · seguros · juegos</span></div>
+          <div><b className="block text-[15px]">KZU</b><span className="block text-xs text-[var(--mu)]">Asesores de seguros</span></div>
         </div>
         {entradas.map((entrada, indice) => entrada.clave === '_g' ? (
           <div key={indice} className="px-2.5 pt-3.5 pb-1 text-[11px] font-semibold tracking-[.06em] text-[var(--mu)] uppercase max-[820px]:hidden">{entrada.nombre}</div>

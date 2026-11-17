@@ -27,7 +27,7 @@ export function LoginPage({ configurado, mensaje, ingresar }: LoginPageProps) {
                 <span key={indice} className={`size-[7px] rounded-full ${indice === 1 ? 'bg-[var(--ac)]' : 'bg-[var(--ink)]'}`} />
               ))}
             </div>
-            <div><b className="block text-[15px]">Seguros y Lotería</b><span className="block text-xs text-[var(--mu)]">Socios · seguros · juegos</span></div>
+            <div><b className="block text-[15px]">KZU</b><span className="block text-xs text-[var(--mu)]">Asesores de seguros</span></div>
           </div>
           <h2 className={titulo2}>Ingresar</h2>
           <p className="mt-1 mb-4 text-[13px] text-[var(--mu)]">Ingresá tu usuario y contraseña.</p>

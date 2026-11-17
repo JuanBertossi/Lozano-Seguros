@@ -13,15 +13,15 @@ export function abrirChatWhatsApp(numero: string, mensaje: string, preferencia: 
   setTimeout(() => mostrarAlternativa(abrirWeb), 2500);
 }
 
-export function mensajeCuenta(nombre: string, firma: string, debe: number, favor: number): string {
+export function mensajeCuenta(nombre: string, cuenta: { debe: number; futuro: number; totalPendiente: number; favor: number }): string {
   const moneda = (n: number) => new Intl.NumberFormat('es-AR', {
     style: 'currency', currency: 'ARS', minimumFractionDigits: Number.isInteger(n) ? 0 : 2,
     maximumFractionDigits: Number.isInteger(n) ? 0 : 2,
   }).format(n).replace(/\u00a0/g, ' ');
-  const texto = debe
-    ? `Te paso tu estado de cuenta. Saldo pendiente: ${moneda(debe)}.`
-    : `Te paso tu estado de cuenta. Estás al día${favor ? `, con ${moneda(favor)} a favor` : ''}. ¡Gracias!`;
-  return `Hola ${nombre.split(' ')[0]}! ${texto}\n${firma}`;
+  const texto = cuenta.totalPendiente
+    ? `Te paso tu estado de cuenta.\nSaldo pendiente: ${moneda(cuenta.debe)}\nCuotas por vencer: ${moneda(cuenta.futuro)}\nTotal pendiente: ${moneda(cuenta.totalPendiente)}${cuenta.favor ? `\nSaldo a favor: ${moneda(cuenta.favor)}` : ''}`
+    : `Te paso tu estado de cuenta. Estás al día${cuenta.favor ? `, con ${moneda(cuenta.favor)} a favor` : ''}. ¡Gracias!`;
+  return `Hola ${nombre.split(' ')[0]}! ${texto}\n\nKZU\nAsesores de seguros`;
 }
 
 interface PdfSocio { blob: Blob; nombre: string }

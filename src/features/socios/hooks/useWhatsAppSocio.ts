@@ -1,15 +1,18 @@
-import { useResumenSocio } from '../../../shared/hooks/useResumenSocio';
+import { useQuery } from '@tanstack/react-query';
+import { useRevision } from '../../../shared/hooks/useSesion';
 import { avisar, useAvisos } from '../../../shared/stores/avisos.store';
 import { useDialogos } from '../../../shared/stores/dialogos.store';
 import { enviarWhatsApp, esMovil, mensajeCuenta } from '../lib/whatsapp';
 import { numeroWhatsApp } from '../lib/socios.helpers';
 import { usePdfSocio } from './usePdfSocio';
 import { useFichaSocio } from './useSocios';
+import { leerPdfSocio } from '../api/socios.service';
 
 export function useWhatsAppSocio(socioId: string) {
   const cerrar = useDialogos((estado) => estado.cerrar);
   const ficha = useFichaSocio(socioId);
-  const resumen = useResumenSocio(socioId);
+  const revision = useRevision();
+  const resumen = useQuery({ queryKey: ['socios', 'pdf', revision, socioId], queryFn: () => leerPdfSocio(revision!, socioId), enabled: revision !== null, staleTime: 0 });
   const pdfSocio = usePdfSocio();
 
   const error = ficha.error ?? resumen.error;
@@ -17,7 +20,7 @@ export function useWhatsAppSocio(socioId: string) {
     nombre: ficha.data.socio.nombre,
     telefono: numeroWhatsApp(ficha.data.socio.tel || ''),
     movil: esMovil(),
-    mensaje: mensajeCuenta(ficha.data.socio.nombre, ficha.data.firma, resumen.data.debe, resumen.data.favor),
+    mensaje: mensajeCuenta(ficha.data.socio.nombre, resumen.data.cuenta),
   } : null;
 
   async function enviar(formulario: { mensaje: string; pdf: boolean }) {
